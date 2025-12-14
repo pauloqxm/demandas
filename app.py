@@ -8,6 +8,7 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 import os
 from urllib.parse import urlparse
+import hashlib
 
 # =============================
 # Configuração da página
@@ -60,8 +61,17 @@ def get_db_config():
         "sslmode": os.environ.get("DB_SSLMODE") or _safe_st_secrets_get("DB_SSLMODE", "prefer"),
     }
 
-# Senha de administrador (Railway: defina ADMIN_PASSWORD em Variables)
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+# ============================================
+# FUNÇÕES DE SEGURANÇA E AUTENTICAÇÃO
+# ============================================
+
+def hash_password(password):
+    """Cria hash da senha usando SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verificar_senha(senha_digitada, senha_hash):
+    """Verifica se a senha digitada corresponde ao hash"""
+    return hash_password(senha_digitada) == senha_hash
 
 @contextmanager
 def get_db_connection():
@@ -99,6 +109,7 @@ def init_database():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Tabela de demandas
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS demandas (
                         id SERIAL PRIMARY KEY,
@@ -117,6 +128,7 @@ def init_database():
                     )
                 """)
 
+                # Tabela de histórico
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS historico_demandas (
                         id SERIAL PRIMARY KEY,
@@ -128,28 +140,186 @@ def init_database():
                     )
                 """)
 
+                # Tabela de usuários (ATUALIZADA)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS usuarios (
                         id SERIAL PRIMARY KEY,
                         nome VARCHAR(200) NOT NULL,
                         email VARCHAR(200) UNIQUE NOT NULL,
+                        username VARCHAR(100) UNIQUE NOT NULL,
+                        senha_hash VARCHAR(255) NOT NULL,
                         departamento VARCHAR(100),
+                        nivel_acesso VARCHAR(50) DEFAULT 'usuario',
                         is_admin BOOLEAN DEFAULT FALSE,
-                        data_cadastro TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        ativo BOOLEAN DEFAULT TRUE,
+                        data_cadastro TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        ultimo_login TIMESTAMP WITH TIME ZONE,
+                        UNIQUE(username, email)
                     )
                 """)
 
+                # Índices
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_status ON demandas(status)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_departamento ON demandas(departamento)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_prioridade ON demandas(prioridade)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_data_criacao ON demandas(data_criacao DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_historico_demanda_id ON historico_demandas(demanda_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios(username)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_nivel_acesso ON usuarios(nivel_acesso)")
+
+                # Criar usuário admin padrão se não existir
+                cur.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'admin'")
+                if cur.fetchone()[0] == 0:
+                    admin_hash = hash_password("admin123")
+                    cur.execute("""
+                        INSERT INTO usuarios (nome, email, username, senha_hash, nivel_acesso, is_admin)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (
+                        "Administrador Principal",
+                        "admin@sistema.com",
+                        "admin",
+                        admin_hash,
+                        "administrador",
+                        True
+                    ))
+                    st.success("✅ Usuário admin padrão criado (senha: admin123)")
 
                 conn.commit()
 
         return True, "✅ Banco de dados inicializado com sucesso!"
     except Exception as e:
         return False, f"❌ Erro ao inicializar banco: {str(e)}"
+
+# ============================================
+# FUNÇÕES DE USUÁRIOS E AUTENTICAÇÃO
+# ============================================
+
+def autenticar_usuario(username, senha):
+    """Autentica um usuário pelo username e senha"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, nome, email, username, senha_hash, 
+                           nivel_acesso, is_admin, departamento, ativo
+                    FROM usuarios 
+                    WHERE username = %s AND ativo = TRUE
+                """, (username,))
+                
+                usuario = cur.fetchone()
+                
+                if usuario and verificar_senha(senha, usuario["senha_hash"]):
+                    # Atualizar último login
+                    cur.execute("""
+                        UPDATE usuarios 
+                        SET ultimo_login = CURRENT_TIMESTAMP 
+                        WHERE id = %s
+                    """, (usuario["id"],))
+                    conn.commit()
+                    return usuario
+                return None
+    except Exception as e:
+        st.error(f"Erro na autenticação: {str(e)}")
+        return None
+
+def criar_usuario(dados_usuario):
+    """Cria um novo usuário no sistema"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Verificar se username ou email já existem
+                cur.execute("""
+                    SELECT COUNT(*) FROM usuarios 
+                    WHERE username = %s OR email = %s
+                """, (dados_usuario["username"], dados_usuario["email"]))
+                
+                if cur.fetchone()[0] > 0:
+                    return False, "Username ou email já cadastrado"
+                
+                # Criar hash da senha
+                senha_hash = hash_password(dados_usuario["senha"])
+                
+                cur.execute("""
+                    INSERT INTO usuarios 
+                    (nome, email, username, senha_hash, departamento, nivel_acesso, is_admin)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    dados_usuario["nome"],
+                    dados_usuario["email"],
+                    dados_usuario["username"],
+                    senha_hash,
+                    dados_usuario.get("departamento", ""),
+                    dados_usuario.get("nivel_acesso", "usuario"),
+                    dados_usuario.get("is_admin", False)
+                ))
+                
+                conn.commit()
+                return True, "Usuário criado com sucesso!"
+    except Exception as e:
+        return False, f"Erro ao criar usuário: {str(e)}"
+
+def listar_usuarios():
+    """Lista todos os usuários do sistema"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, nome, email, username, departamento, 
+                           nivel_acesso, is_admin, ativo,
+                           TO_CHAR(data_cadastro, 'DD/MM/YYYY') as data_cadastro,
+                           TO_CHAR(ultimo_login, 'DD/MM/YYYY HH24:MI') as ultimo_login
+                    FROM usuarios
+                    ORDER BY nome
+                """)
+                return cur.fetchall()
+    except Exception as e:
+        st.error(f"Erro ao listar usuários: {str(e)}")
+        return []
+
+def atualizar_usuario(usuario_id, dados_atualizados):
+    """Atualiza os dados de um usuário"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Construir query dinamicamente
+                campos = []
+                valores = []
+                
+                for campo, valor in dados_atualizados.items():
+                    if campo == "senha" and valor:
+                        campos.append("senha_hash = %s")
+                        valores.append(hash_password(valor))
+                    elif campo != "senha" and valor is not None:
+                        campos.append(f"{campo} = %s")
+                        valores.append(valor)
+                
+                if not campos:
+                    return False, "Nenhum dado para atualizar"
+                
+                query = f"UPDATE usuarios SET {', '.join(campos)} WHERE id = %s"
+                valores.append(usuario_id)
+                
+                cur.execute(query, valores)
+                conn.commit()
+                return True, "Usuário atualizado com sucesso!"
+    except Exception as e:
+        return False, f"Erro ao atualizar usuário: {str(e)}"
+
+def excluir_usuario(usuario_id):
+    """Exclui um usuário (desativa)"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE usuarios 
+                    SET ativo = FALSE 
+                    WHERE id = %s AND id != 1  # Não permitir excluir o admin principal
+                """, (usuario_id,))
+                conn.commit()
+                return True, "Usuário desativado com sucesso!"
+    except Exception as e:
+        return False, f"Erro ao excluir usuário: {str(e)}"
 
 # ============================================
 # UTILITÁRIO JSON SEGURO
@@ -172,7 +342,7 @@ def dumps_safe(payload):
     return json.dumps(json_safe(payload), ensure_ascii=False, default=str)
 
 # ============================================
-# FUNÇÕES DO SISTEMA
+# FUNÇÕES DO SISTEMA DE DEMANDAS
 # ============================================
 
 def carregar_demandas(filtros=None):
@@ -290,12 +460,14 @@ def atualizar_demanda(demanda_id, dados):
                     demanda_id
                 ))
 
+                # Registrar no histórico usando o usuário logado
+                usuario_atual = st.session_state.get("usuario_nome", "Administrador")
                 cur.execute("""
                     INSERT INTO historico_demandas (demanda_id, usuario, acao, detalhes)
                     VALUES (%s, %s, %s, %s)
                 """, (
                     demanda_id,
-                    "Administrador",
+                    usuario_atual,
                     "ATUALIZAÇÃO",
                     dumps_safe({
                         "antigo": dados_antigos if dados_antigos else {},
@@ -316,12 +488,14 @@ def excluir_demanda(demanda_id):
                 cur.execute("SELECT * FROM demandas WHERE id = %s", (demanda_id,))
                 dados = cur.fetchone()
 
+                # Registrar no histórico usando o usuário logado
+                usuario_atual = st.session_state.get("usuario_nome", "Administrador")
                 cur.execute("""
                     INSERT INTO historico_demandas (demanda_id, usuario, acao, detalhes)
                     VALUES (%s, %s, %s, %s)
                 """, (
                     demanda_id,
-                    "Administrador",
+                    usuario_atual,
                     "EXCLUSÃO",
                     dumps_safe(dados if dados else {})
                 ))
@@ -531,30 +705,247 @@ def pagina_login_admin():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("form_admin_login"):
-            senha = st.text_input("🔑 Senha de administrador:", type="password")
+            username = st.text_input("👤 Username")
+            senha = st.text_input("🔑 Senha:", type="password")
             login_submit = st.form_submit_button("🔓 Entrar", type="primary")
             
             if login_submit:
-                if senha == ADMIN_PASSWORD:
-                    st.session_state.admin_autenticado = True
-                    st.session_state.pagina_atual = "admin"
-                    st.rerun()
+                if username and senha:
+                    usuario = autenticar_usuario(username, senha)
+                    if usuario:
+                        # Salvar informações do usuário na sessão
+                        st.session_state.usuario_logado = True
+                        st.session_state.usuario_id = usuario["id"]
+                        st.session_state.usuario_nome = usuario["nome"]
+                        st.session_state.usuario_username = usuario["username"]
+                        st.session_state.usuario_nivel = usuario["nivel_acesso"]
+                        st.session_state.usuario_admin = usuario["is_admin"]
+                        
+                        st.session_state.pagina_atual = "admin"
+                        st.success(f"✅ Bem-vindo, {usuario['nome']}!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Credenciais inválidas ou usuário inativo!")
                 else:
-                    st.error("❌ Senha incorreta!")
+                    st.error("⚠️ Preencha todos os campos!")
     
     # Botão para voltar ao início
     if st.button("← Voltar ao Início", key="voltar_login"):
         st.session_state.pagina_atual = "inicio"
         st.rerun()
 
+def pagina_gerenciar_usuarios():
+    """Página para gerenciar usuários do sistema"""
+    st.header("👥 Gerenciamento de Usuários")
+    
+    # Verificar permissões
+    if not st.session_state.get("usuario_admin", False):
+        st.error("⛔ Acesso negado! Apenas administradores podem gerenciar usuários.")
+        return
+    
+    tab1, tab2 = st.tabs(["📋 Lista de Usuários", "➕ Novo Usuário"])
+    
+    with tab1:
+        st.subheader("📋 Usuários do Sistema")
+        usuarios = listar_usuarios()
+        
+        if usuarios:
+            df_usuarios = pd.DataFrame(usuarios)
+            
+            # Converter valores booleanos para texto
+            df_usuarios["is_admin"] = df_usuarios["is_admin"].apply(lambda x: "✅" if x else "❌")
+            df_usuarios["ativo"] = df_usuarios["ativo"].apply(lambda x: "✅" if x else "❌")
+            
+            st.dataframe(
+                df_usuarios,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "id": "ID",
+                    "nome": "Nome",
+                    "email": "Email",
+                    "username": "Username",
+                    "departamento": "Departamento",
+                    "nivel_acesso": "Nível",
+                    "is_admin": "Admin",
+                    "ativo": "Ativo",
+                    "data_cadastro": "Cadastro",
+                    "ultimo_login": "Último Login"
+                }
+            )
+            
+            # Opções de gerenciamento por usuário
+            st.subheader("⚙️ Gerenciar Usuário")
+            usuarios_opcoes = [f"{u['id']} - {u['nome']} ({u['username']})" for u in usuarios]
+            usuario_selecionado = st.selectbox("Selecione um usuário:", usuarios_opcoes)
+            
+            if usuario_selecionado:
+                usuario_id = int(usuario_selecionado.split(" - ")[0])
+                usuario_info = next((u for u in usuarios if u["id"] == usuario_id), None)
+                
+                if usuario_info:
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        if st.button("🔄 Alterar Nível", key=f"nivel_{usuario_id}"):
+                            st.session_state.editar_usuario_id = usuario_id
+                            st.session_state.editar_campo = "nivel"
+                            st.rerun()
+                    
+                    with col2:
+                        if usuario_info["ativo"]:
+                            if st.button("❌ Desativar", key=f"desativar_{usuario_id}"):
+                                sucesso, mensagem = excluir_usuario(usuario_id)
+                                if sucesso:
+                                    st.success(mensagem)
+                                    st.rerun()
+                                else:
+                                    st.error(mensagem)
+                        else:
+                            if st.button("✅ Reativar", key=f"reativar_{usuario_id}"):
+                                sucesso, mensagem = atualizar_usuario(usuario_id, {"ativo": True})
+                                if sucesso:
+                                    st.success(mensagem)
+                                    st.rerun()
+                                else:
+                                    st.error(mensagem)
+                    
+                    with col3:
+                        if st.button("🔑 Redefinir Senha", key=f"senha_{usuario_id}"):
+                            st.session_state.editar_usuario_id = usuario_id
+                            st.session_state.editar_campo = "senha"
+                            st.rerun()
+                    
+                    # Modal para edição
+                    if "editar_usuario_id" in st.session_state and st.session_state.editar_usuario_id == usuario_id:
+                        with st.expander("✏️ Editar Usuário", expanded=True):
+                            if st.session_state.editar_campo == "nivel":
+                                novo_nivel = st.selectbox(
+                                    "Novo Nível de Acesso:",
+                                    ["usuario", "supervisor", "administrador"],
+                                    index=["usuario", "supervisor", "administrador"].index(usuario_info["nivel_acesso"])
+                                )
+                                
+                                if st.button("💾 Salvar Alteração"):
+                                    sucesso, mensagem = atualizar_usuario(usuario_id, {
+                                        "nivel_acesso": novo_nivel,
+                                        "is_admin": (novo_nivel == "administrador")
+                                    })
+                                    if sucesso:
+                                        st.success(mensagem)
+                                        del st.session_state.editar_usuario_id
+                                        del st.session_state.editar_campo
+                                        st.rerun()
+                                    else:
+                                        st.error(mensagem)
+                                
+                                if st.button("❌ Cancelar"):
+                                    del st.session_state.editar_usuario_id
+                                    del st.session_state.editar_campo
+                                    st.rerun()
+                            
+                            elif st.session_state.editar_campo == "senha":
+                                nova_senha = st.text_input("Nova Senha:", type="password")
+                                confirmar_senha = st.text_input("Confirmar Senha:", type="password")
+                                
+                                if st.button("🔐 Alterar Senha"):
+                                    if nova_senha and nova_senha == confirmar_senha:
+                                        sucesso, mensagem = atualizar_usuario(usuario_id, {"senha": nova_senha})
+                                        if sucesso:
+                                            st.success("✅ Senha alterada com sucesso!")
+                                            del st.session_state.editar_usuario_id
+                                            del st.session_state.editar_campo
+                                            st.rerun()
+                                        else:
+                                            st.error(mensagem)
+                                    else:
+                                        st.error("⚠️ As senhas não coincidem!")
+                                
+                                if st.button("❌ Cancelar"):
+                                    del st.session_state.editar_usuario_id
+                                    del st.session_state.editar_campo
+                                    st.rerun()
+        else:
+            st.info("Nenhum usuário cadastrado no sistema.")
+    
+    with tab2:
+        st.subheader("➕ Cadastrar Novo Usuário")
+        
+        with st.form("form_novo_usuario"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                nome = st.text_input("Nome Completo*")
+                email = st.text_input("Email*")
+                username = st.text_input("Username*")
+            
+            with col2:
+                departamento = st.selectbox(
+                    "Departamento",
+                    ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "TI", "RH", "Financeiro", "Outro"]
+                )
+                nivel_acesso = st.selectbox(
+                    "Nível de Acesso",
+                    ["usuario", "supervisor", "administrador"],
+                    help="usuário: apenas visualização, supervisor: edição limitada, administrador: acesso total"
+                )
+                senha = st.text_input("Senha*", type="password")
+                confirmar_senha = st.text_input("Confirmar Senha*", type="password")
+            
+            criar = st.form_submit_button("✅ Criar Usuário", type="primary")
+            
+            if criar:
+                if not all([nome, email, username, senha, confirmar_senha]):
+                    st.error("⚠️ Preencha todos os campos obrigatórios!")
+                elif senha != confirmar_senha:
+                    st.error("❌ As senhas não coincidem!")
+                else:
+                    dados_usuario = {
+                        "nome": nome,
+                        "email": email,
+                        "username": username,
+                        "senha": senha,
+                        "departamento": departamento,
+                        "nivel_acesso": nivel_acesso,
+                        "is_admin": (nivel_acesso == "administrador")
+                    }
+                    
+                    sucesso, mensagem = criar_usuario(dados_usuario)
+                    if sucesso:
+                        st.success(f"✅ {mensagem}")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {mensagem}")
+
 def pagina_admin():
     """Página principal do administrador com sidebar"""
+    # Verificar se usuário está logado
+    if not st.session_state.get("usuario_logado", False):
+        st.session_state.pagina_atual = "login_admin"
+        st.rerun()
+        return
+    
     # Configurar sidebar para admin
     st.sidebar.title("🔧 Administração")
     
-    # Menu de navegação para admin
-    menu_opcoes = ["🏠 Dashboard", "📋 Todas as Demandas", "✏️ Editar Demanda", 
-                   "📊 Estatísticas", "⚙️ Configurações"]
+    # Informações do usuário
+    st.sidebar.markdown(f"**👤 {st.session_state.get('usuario_nome', 'Usuário')}**")
+    st.sidebar.caption(f"Nível: {st.session_state.get('usuario_nivel', 'usuário').title()}")
+    st.sidebar.markdown("---")
+    
+    # Menu de navegação para admin (baseado no nível)
+    usuario_nivel = st.session_state.get("usuario_nivel", "usuario")
+    usuario_admin = st.session_state.get("usuario_admin", False)
+    
+    menu_opcoes = ["🏠 Dashboard", "📋 Todas as Demandas", "✏️ Editar Demanda", "📊 Estatísticas"]
+    
+    # Apenas administradores podem gerenciar usuários
+    if usuario_admin:
+        menu_opcoes.append("👥 Gerenciar Usuários")
+    
+    menu_opcoes.append("⚙️ Configurações")
+    
     menu_selecionado = st.sidebar.radio("Navegação", menu_opcoes)
     
     # Filtros na sidebar
@@ -576,7 +967,9 @@ def pagina_admin():
     # Botão de logout
     st.sidebar.markdown("---")
     if st.sidebar.button("🚪 Logout", type="secondary"):
-        st.session_state.admin_autenticado = False
+        # Limpar sessão
+        for key in ['usuario_logado', 'usuario_id', 'usuario_nome', 'usuario_username', 'usuario_nivel', 'usuario_admin']:
+            st.session_state.pop(key, None)
         st.session_state.pagina_atual = "inicio"
         st.rerun()
     
@@ -667,17 +1060,18 @@ def pagina_admin():
             
             st.info(f"📊 Encontradas **{len(todas_demandas)}** demandas")
             
-            # Ações rápidas
-            col_acao1, col_acao2, col_acao3 = st.columns(3)
-            with col_acao1:
-                if st.button("📥 Exportar para CSV"):
-                    csv = df_admin.to_csv(index=False)
-                    st.download_button(
-                        label="Baixar CSV",
-                        data=csv,
-                        file_name=f"demandas_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
+            # Ações rápidas (apenas para administradores e supervisores)
+            if usuario_nivel in ["supervisor", "administrador"]:
+                col_acao1, col_acao2, col_acao3 = st.columns(3)
+                with col_acao1:
+                    if st.button("📥 Exportar para CSV"):
+                        csv = df_admin.to_csv(index=False)
+                        st.download_button(
+                            label="Baixar CSV",
+                            data=csv,
+                            file_name=f"demandas_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
             
             st.dataframe(
                 df_admin,
@@ -699,11 +1093,15 @@ def pagina_admin():
             st.info("Ainda não existem demandas cadastradas.")
     
     elif menu_selecionado == "✏️ Editar Demanda":
+        # Verificar permissão
+        if usuario_nivel not in ["supervisor", "administrador"]:
+            st.error("⛔ Acesso negado! Apenas supervisores e administradores podem editar demandas.")
+            return
+            
         st.header("✏️ Editar Demanda")
         todas_demandas = carregar_demandas()
         
         if todas_demandas:
-            # CORREÇÃO: Nome correto da variável - sem "s" no final
             opcoes_demanda = [f"#{d['id']} - {d['item'][:50]}..." for d in todas_demandas]
             selecao = st.selectbox("Selecione uma demanda:", opcoes_demanda)
             
@@ -755,7 +1153,11 @@ def pagina_admin():
                         with col_botoes1:
                             salvar = st.form_submit_button("💾 Salvar Alterações", type="primary")
                         with col_botoes2:
-                            excluir = st.form_submit_button("🗑️ Excluir Demanda", type="secondary")
+                            # Apenas administradores podem excluir
+                            if usuario_admin:
+                                excluir = st.form_submit_button("🗑️ Excluir Demanda", type="secondary")
+                            else:
+                                excluir = False
                         with col_botoes3:
                             cancelar = st.form_submit_button("↻ Cancelar")
                         
@@ -778,7 +1180,7 @@ def pagina_admin():
                             else:
                                 st.error("❌ Erro ao atualizar demanda")
                         
-                        if excluir:
+                        if excluir and usuario_admin:
                             if excluir_demanda(demanda_id):
                                 st.warning(f"⚠️ Demanda #{demanda_id} excluída!")
                                 st.rerun()
@@ -789,6 +1191,9 @@ def pagina_admin():
                             st.rerun()
         else:
             st.info("Não existem demandas para editar ainda.")
+    
+    elif menu_selecionado == "👥 Gerenciar Usuários":
+        pagina_gerenciar_usuarios()
     
     elif menu_selecionado == "📊 Estatísticas":
         st.header("📊 Estatísticas Avançadas")
@@ -832,43 +1237,75 @@ def pagina_admin():
     
     elif menu_selecionado == "⚙️ Configurações":
         st.header("⚙️ Configurações do Sistema")
-        cfg = get_db_config()
-        st.code(
-            "Host: {h}\nDatabase: {d}\nUser: {u}\nPort: {p}\nSSL: {s}".format(
-                h=cfg.get("host", "N/A"),
-                d=cfg.get("database", "N/A"),
-                u=cfg.get("user", "N/A"),
-                p=cfg.get("port", "N/A"),
-                s=cfg.get("sslmode", "N/A"),
+        
+        # Informações do usuário atual
+        with st.expander("👤 Meus Dados", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.info(f"**Nome:** {st.session_state.get('usuario_nome', 'N/A')}")
+                st.info(f"**Username:** {st.session_state.get('usuario_username', 'N/A')}")
+            with col2:
+                st.info(f"**Nível:** {st.session_state.get('usuario_nivel', 'N/A').title()}")
+                st.info(f"**Admin:** {'✅ Sim' if st.session_state.get('usuario_admin', False) else '❌ Não'}")
+        
+        # Configurações do sistema
+        with st.expander("🔧 Configurações do Banco de Dados"):
+            cfg = get_db_config()
+            st.code(
+                "Host: {h}\nDatabase: {d}\nUser: {u}\nPort: {p}\nSSL: {s}".format(
+                    h=cfg.get("host", "N/A"),
+                    d=cfg.get("database", "N/A"),
+                    u=cfg.get("user", "N/A"),
+                    p=cfg.get("port", "N/A"),
+                    s=cfg.get("sslmode", "N/A"),
+                )
             )
-        )
-        
-        if st.button("🔄 Testar Conexão com Banco"):
-            conexao_ok, mensagem = test_db_connection()
-            if conexao_ok:
-                st.success(mensagem)
-            else:
-                st.error(mensagem)
-        
-        st.subheader("📈 Informações do Sistema")
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT
-                            COUNT(*) as total_demandas,
-                            MIN(data_criacao) as primeira_demanda,
-                            MAX(data_criacao) as ultima_demanda
-                        FROM demandas
-                    """)
-                    info = cur.fetchone()
             
-            if info:
-                st.metric("Total de Demandas no Banco", info[0])
-                st.caption(f"Primeira demanda: {info[1].strftime('%d/%m/%Y') if info[1] else 'N/A'}")
-                st.caption(f"Última demanda: {info[2].strftime('%d/%m/%Y %H:%M') if info[2] else 'N/A'}")
-        except Exception:
-            st.info("Não foi possível carregar informações do sistema")
+            if st.button("🔄 Testar Conexão com Banco"):
+                conexao_ok, mensagem = test_db_connection()
+                if conexao_ok:
+                    st.success(mensagem)
+                else:
+                    st.error(mensagem)
+        
+        # Estatísticas do sistema
+        with st.expander("📈 Informações do Sistema"):
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Demandas
+                        cur.execute("""
+                            SELECT
+                                COUNT(*) as total_demandas,
+                                MIN(data_criacao) as primeira_demanda,
+                                MAX(data_criacao) as ultima_demanda
+                            FROM demandas
+                        """)
+                        info_demandas = cur.fetchone()
+                        
+                        # Usuários
+                        cur.execute("""
+                            SELECT
+                                COUNT(*) as total_usuarios,
+                                COUNT(CASE WHEN ativo = TRUE THEN 1 END) as usuarios_ativos,
+                                COUNT(CASE WHEN is_admin = TRUE THEN 1 END) as administradores
+                            FROM usuarios
+                        """)
+                        info_usuarios = cur.fetchone()
+                
+                if info_demandas and info_usuarios:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Total de Demandas", info_demandas[0])
+                        st.caption(f"Primeira demanda: {info_demandas[1].strftime('%d/%m/%Y') if info_demandas[1] else 'N/A'}")
+                        st.caption(f"Última demanda: {info_demandas[2].strftime('%d/%m/%Y %H:%M') if info_demandas[2] else 'N/A'}")
+                    
+                    with col2:
+                        st.metric("Usuários Ativos", info_usuarios[1])
+                        st.caption(f"Total de usuários: {info_usuarios[0]}")
+                        st.caption(f"Administradores: {info_usuarios[2]}")
+            except Exception:
+                st.info("Não foi possível carregar informações do sistema")
 
 # ============================================
 # INICIALIZAÇÃO E ROTEAMENTO
@@ -890,8 +1327,9 @@ if "init_complete" not in st.session_state:
 if "pagina_atual" not in st.session_state:
     st.session_state.pagina_atual = "inicio"
 
-if "admin_autenticado" not in st.session_state:
-    st.session_state.admin_autenticado = False
+# Inicializar variáveis de sessão para autenticação
+if "usuario_logado" not in st.session_state:
+    st.session_state.usuario_logado = False
 
 if "filtros" not in st.session_state:
     st.session_state.filtros = {}
@@ -909,11 +1347,11 @@ elif st.session_state.pagina_atual == "solicitacao":
     pagina_solicitacao()
 elif st.session_state.pagina_atual == "login_admin":
     pagina_login_admin()
-elif st.session_state.pagina_atual == "admin" and st.session_state.admin_autenticado:
+elif st.session_state.pagina_atual == "admin":
     pagina_admin()
 else:
-    # Se tentar acessar admin sem autenticação, voltar para login
-    st.session_state.pagina_atual = "login_admin"
+    # Página padrão
+    st.session_state.pagina_atual = "inicio"
     st.rerun()
 
 # ============================================
@@ -935,5 +1373,5 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
     else:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
     
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas v1.0")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas v2.0")
     st.sidebar.caption("Conectado ao Railway PostgreSQL")
