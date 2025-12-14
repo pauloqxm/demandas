@@ -788,6 +788,13 @@ def pagina_solicitacao():
                 ["Administrativo", "Gestão", "Operação", "Açudes", "EB",
                  "Outro"]
             )
+            
+            acude = st.selectbox(
+                "📍 Local",
+                ["Gerência", "Fogareiro", "Quixeramobim", "Umari", "Cedro", "Patú", "Banabuiú",
+                 "Cipoada", "Poço do Barro"]
+                
+            )
             categoria = st.selectbox(
                 "📂 Categoria",
                 ["Combustível", "Materiais", "Equipamentos", "Ferramentas", "Alimentos",
@@ -795,7 +802,7 @@ def pagina_solicitacao():
             )
 
         with col2:
-            item = st.text_area("📝 Descrição da Demanda*", height=100)
+            item = st.text_area("📝 Descrição da Demanda*", height=20)
             quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
             unidade = st.selectbox("📏 Unidade", ["Kg", "Litros", "Und.", "Metros"])
 
