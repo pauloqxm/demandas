@@ -234,7 +234,7 @@ def init_database():
                         data_atualizacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         categoria VARCHAR(100),
                         urgencia BOOLEAN DEFAULT FALSE,
-                        estimativa_horas DECIMAL(5,2)
+                        local VARCHAR(100) NOT NULL
                     )
                 """)
 
@@ -464,7 +464,7 @@ def carregar_demandas(filtros=None):
                            prioridade, observacoes, status, categoria, urgencia,
                            data_criacao,
                            data_atualizacao,
-                           estimativa_horas
+                           local
                     FROM demandas
                     WHERE 1=1
                 """
@@ -530,7 +530,7 @@ def adicionar_demanda(dados):
                 
                 cur.execute("""
                     INSERT INTO demandas
-                    (item, quantidade, solicitante, departamento, prioridade, observacoes, categoria, urgencia, estimativa_horas)
+                    (item, quantidade, solicitante, departamento, prioridade, observacoes, categoria, urgencia, local)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, data_criacao
                 """, (
@@ -542,7 +542,7 @@ def adicionar_demanda(dados):
                     dados.get("observacoes", ""),
                     dados.get("categoria", "Geral"),
                     dados.get("urgencia", False),
-                    dados.get("estimativa_horas")
+                    dados.get("local")
                 ))
 
                 resultado = cur.fetchone()
@@ -575,7 +575,7 @@ def atualizar_demanda(demanda_id, dados):
                     SET item = %s, quantidade = %s, solicitante = %s,
                         departamento = %s, prioridade = %s, observacoes = %s,
                         status = %s, categoria = %s, urgencia = %s,
-                        estimativa_horas = %s, data_atualizacao = CURRENT_TIMESTAMP
+                        local = %s, data_atualizacao = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (
                     dados["item"],
@@ -587,7 +587,7 @@ def atualizar_demanda(demanda_id, dados):
                     dados["status"],
                     dados.get("categoria", "Geral"),
                     dados.get("urgencia", False),
-                    dados.get("estimativa_horas"),
+                    dados.get("local"),
                     demanda_id
                 ))
 
@@ -658,7 +658,7 @@ def obter_estatisticas():
                         COUNT(CASE WHEN status = 'Concluída' THEN 1 END) as concluidas,
                         COUNT(CASE WHEN urgencia = TRUE THEN 1 END) as urgentes,
                         COALESCE(SUM(quantidade), 0) as total_itens,
-                        COALESCE(SUM(estimativa_horas), 0) as total_horas
+                        COALESCE(SUM(local), 0) as total_horas
                     FROM demandas
                 """)
                 totais = cur.fetchone()
@@ -789,7 +789,7 @@ def pagina_solicitacao():
                  "Outro"]
             )
             
-            acude = st.selectbox(
+            local = st.selectbox(
                 "📍 Local",
                 ["Gerência", "Fogareiro", "Quixeramobim", "Umari", "Cedro", "Patú", "Banabuiú",
                  "Cipoada", "Poço do Barro"]
@@ -827,7 +827,7 @@ def pagina_solicitacao():
                     "observacoes": observacoes,
                     "categoria": categoria,
                     "urgencia": bool(urgencia),
-                    "estimativa_horas": float(estimativa_horas) if estimativa_horas and estimativa_horas > 0 else None
+                    "local": float(local) if local and local > 0 else None
                 }
 
                 demanda_id = adicionar_demanda(nova_demanda)
@@ -1344,7 +1344,7 @@ def pagina_admin():
                                 "categoria": categoria_edit,
                                 "urgencia": bool(urgencia_edit),
                                 "observacoes": observacoes_edit,
-                                "estimativa_horas": demanda_atual.get("estimativa_horas"),
+                                "local": demanda_atual.get("elocal"),
                             }
                             if atualizar_demanda(demanda_id, dados_atualizados):
                                 st.success(f"✅ Demanda #{demanda_id} atualizada com sucesso!")
