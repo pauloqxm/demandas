@@ -211,6 +211,59 @@ def verificar_e_atualizar_tabela_usuarios():
     except Exception as e:
         return False, f"Erro ao verificar/atualizar tabela usuarios: {str(e)}"
 
+def verificar_e_atualizar_tabela_demandas():
+    """Verifica e atualiza a estrutura da tabela demandas se necessário"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Verificar se a tabela demandas existe
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'demandas'
+                    );
+                """)
+                tabela_existe = cur.fetchone()[0]
+                
+                if not tabela_existe:
+                    return True, "Tabela demandas será criada na inicialização"
+                
+                # Verificar colunas existentes
+                cur.execute("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'demandas'
+                """)
+                colunas = cur.fetchall()
+                colunas_existentes = [col[0] for col in colunas]
+                
+                # Lista de colunas necessárias
+                colunas_necessarias = [
+                    ('local', 'VARCHAR(100)', 'ADD COLUMN local VARCHAR(100) DEFAULT \'Gerência\''),
+                    ('unidade', 'VARCHAR(50)', 'ADD COLUMN unidade VARCHAR(50) DEFAULT \'Unid.\'')
+                ]
+                
+                alteracoes = []
+                for coluna, tipo, sql in colunas_necessarias:
+                    if coluna not in colunas_existentes:
+                        alteracoes.append(sql)
+                
+                # Executar alterações se necessário
+                if alteracoes:
+                    for alteracao in alteracoes:
+                        try:
+                            cur.execute(f"ALTER TABLE demandas {alteracao}")
+                        except Exception as e:
+                            st.warning(f"Aviso ao adicionar coluna: {str(e)}")
+                    
+                    conn.commit()
+                    return True, f"Tabela demandas atualizada! Colunas adicionadas: {len(alteracoes)}"
+                
+                return True, "Tabela demandas já está atualizada!"
+                
+    except Exception as e:
+        return False, f"Erro ao verificar/atualizar tabela demandas: {str(e)}"
+
 def init_database():
     """Inicializa o banco de dados no Railway"""
     try:
@@ -219,7 +272,12 @@ def init_database():
                 # Configurar timezone para Fortaleza
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
                 
-                # Tabela de demandas
+                # Verificar e atualizar tabela de demandas primeiro
+                sucesso_demandas, mensagem_demandas = verificar_e_atualizar_tabela_demandas()
+                if not sucesso_demandas:
+                    return False, mensagem_demandas
+                
+                # Tabela de demandas (com novos campos)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS demandas (
                         id SERIAL PRIMARY KEY,
@@ -227,12 +285,14 @@ def init_database():
                         quantidade INTEGER NOT NULL CHECK (quantidade > 0),
                         solicitante VARCHAR(200) NOT NULL,
                         departamento VARCHAR(100) NOT NULL,
+                        local VARCHAR(100) DEFAULT 'Gerência',
                         prioridade VARCHAR(50) NOT NULL,
                         observacoes TEXT,
                         status VARCHAR(50) DEFAULT 'Pendente',
                         data_criacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         data_atualizacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         categoria VARCHAR(100),
+                        unidade VARCHAR(50) DEFAULT 'Unid.',
                         urgencia BOOLEAN DEFAULT FALSE,
                         estimativa_horas DECIMAL(5,2)
                     )
@@ -253,9 +313,9 @@ def init_database():
                 conn.commit()
 
                 # Verificar e atualizar tabela de usuários
-                sucesso, mensagem = verificar_e_atualizar_tabela_usuarios()
-                if not sucesso:
-                    return False, mensagem
+                sucesso_usuarios, mensagem_usuarios = verificar_e_atualizar_tabela_usuarios()
+                if not sucesso_usuarios:
+                    return False, mensagem_usuarios
 
                 # Criar usuário admin padrão se não existir
                 cur.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'admin'")
@@ -461,9 +521,8 @@ def carregar_demandas(filtros=None):
                 
                 query = """
                     SELECT id, item, quantidade, solicitante, departamento,
-                           prioridade, observacoes, status, categoria, urgencia,
-                           data_criacao,
-                           data_atualizacao,
+                           local, prioridade, observacoes, status, categoria,
+                           unidade, urgencia, data_criacao, data_atualizacao,
                            estimativa_horas
                     FROM demandas
                     WHERE 1=1
@@ -530,17 +589,20 @@ def adicionar_demanda(dados):
                 
                 cur.execute("""
                     INSERT INTO demandas
-                    (item, quantidade, solicitante, departamento, prioridade, observacoes, categoria, urgencia, estimativa_horas)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (item, quantidade, solicitante, departamento, local, prioridade, 
+                     observacoes, categoria, unidade, urgencia, estimativa_horas)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, data_criacao
                 """, (
                     dados["item"],
                     dados["quantidade"],
                     dados["solicitante"],
                     dados["departamento"],
+                    dados.get("local", "Gerência"),
                     dados["prioridade"],
                     dados.get("observacoes", ""),
                     dados.get("categoria", "Geral"),
+                    dados.get("unidade", "Unid."),
                     dados.get("urgencia", False),
                     dados.get("estimativa_horas")
                 ))
@@ -573,19 +635,22 @@ def atualizar_demanda(demanda_id, dados):
                 cur.execute("""
                     UPDATE demandas
                     SET item = %s, quantidade = %s, solicitante = %s,
-                        departamento = %s, prioridade = %s, observacoes = %s,
-                        status = %s, categoria = %s, urgencia = %s,
-                        estimativa_horas = %s, data_atualizacao = CURRENT_TIMESTAMP
+                        departamento = %s, local = %s, prioridade = %s, 
+                        observacoes = %s, status = %s, categoria = %s,
+                        unidade = %s, urgencia = %s, estimativa_horas = %s, 
+                        data_atualizacao = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (
                     dados["item"],
                     dados["quantidade"],
                     dados["solicitante"],
                     dados["departamento"],
+                    dados.get("local", "Gerência"),
                     dados["prioridade"],
                     dados.get("observacoes", ""),
                     dados["status"],
                     dados.get("categoria", "Geral"),
+                    dados.get("unidade", "Unid."),
                     dados.get("urgencia", False),
                     dados.get("estimativa_horas"),
                     demanda_id
@@ -788,14 +853,22 @@ def pagina_solicitacao():
                 ["Administrativo", "Gestão", "Operação", "Açudes", "EB",
                  "Outro"]
             )
+            local = st.selectbox(
+                "📍 Local*",
+                ["Gerência", "Fogareiro", "Quixeramobim", "Outro"]
+            )
             categoria = st.selectbox(
                 "📂 Categoria",
                 ["Combustível", "Materiais", "Equipamentos", "Ferramentas", "Alimentos",
                  "Lubrificantes", "Outro"]
             )
+            unidade = st.selectbox(
+                "📏 Unidade*",
+                ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
+            )
 
         with col2:
-            item = st.text_input("📝 Descrição da Demanda*")
+            item = st.text_area("📝 Descrição da Demanda*", height=100)
             quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
             estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5)
 
@@ -810,15 +883,17 @@ def pagina_solicitacao():
         submitted = st.form_submit_button("✅ Enviar Solicitação", type="primary")
 
         if submitted:
-            if solicitante and item and departamento:
+            if solicitante and item and departamento and local and unidade:
                 nova_demanda = {
                     "item": item,
                     "quantidade": int(quantidade),
                     "solicitante": solicitante,
                     "departamento": departamento,
+                    "local": local,
                     "prioridade": prioridade,
                     "observacoes": observacoes,
                     "categoria": categoria,
+                    "unidade": unidade,
                     "urgencia": bool(urgencia),
                     "estimativa_horas": float(estimativa_horas) if estimativa_horas and estimativa_horas > 0 else None
                 }
@@ -1190,13 +1265,16 @@ def pagina_admin():
                     "quantidade": "Qtd",
                     "solicitante": "Solicitante",
                     "departamento": "Depto",
+                    "local": "Local",
                     "prioridade": "Prioridade",
                     "status": "Status",
+                    "categoria": "Categoria",
+                    "unidade": "Unidade",
                     "data_criacao_formatada": "Data Criação",
                     "data_atualizacao_formatada": "Última Atualização"
                 })
                 st.dataframe(
-                    df_display[["ID", "Item", "Qtd", "Solicitante", "Depto", "Prioridade", "Status", "Data Criação"]],
+                    df_display[["ID", "Item", "Qtd", "Solicitante", "Depto", "Local", "Prioridade", "Status", "Categoria", "Unidade", "Data Criação"]],
                     use_container_width=True,
                     hide_index=True
                 )
@@ -1245,8 +1323,11 @@ def pagina_admin():
                     "quantidade": "Qtd",
                     "solicitante": "Solicitante",
                     "departamento": "Depto",
+                    "local": "Local",
                     "prioridade": "Prioridade",
                     "status": "Status",
+                    "categoria": "Categoria",
+                    "unidade": "Unidade",
                     "data_criacao_formatada": "Criação",
                     "data_atualizacao_formatada": "Última Atualização",
                 },
@@ -1279,6 +1360,8 @@ def pagina_admin():
                         "TI", "RH", "Financeiro", "Comercial", "Operações",
                         "Marketing", "Suporte", "Vendas", "Desenvolvimento", "Outro"
                     ]
+                    locais_lista = ["Gerência", "Fogareiro", "Quixeramobim", "Outro"]
+                    unidades_lista = ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
                     status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
                     prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
                     
@@ -1287,6 +1370,16 @@ def pagina_admin():
                         dep_index = departamentos_lista.index(demanda_atual["departamento"])
                     except ValueError:
                         dep_index = len(departamentos_lista) - 1  # Último item (Outro)
+                    
+                    try:
+                        loc_index = locais_lista.index(demanda_atual.get("local", "Gerência"))
+                    except ValueError:
+                        loc_index = 0  # Gerência como padrão
+                    
+                    try:
+                        uni_index = unidades_lista.index(demanda_atual.get("unidade", "Unid."))
+                    except ValueError:
+                        uni_index = 2  # Unid. como padrão
                     
                     try:
                         pri_index = prioridade_lista.index(demanda_atual["prioridade"])
@@ -1306,11 +1399,13 @@ def pagina_admin():
                             quantidade_edit = st.number_input("Quantidade", min_value=1, value=int(demanda_atual["quantidade"]))
                             solicitante_edit = st.text_input("Solicitante", value=demanda_atual["solicitante"])
                             departamento_edit = st.selectbox("Departamento", departamentos_lista, index=dep_index)
+                            local_edit = st.selectbox("Local", locais_lista, index=loc_index)
                         
                         with col_e2:
                             prioridade_edit = st.selectbox("Prioridade", prioridade_lista, index=pri_index)
                             status_edit = st.selectbox("Status", status_lista, index=st_index)
                             categoria_edit = st.text_input("Categoria", value=demanda_atual.get("categoria") or "Geral")
+                            unidade_edit = st.selectbox("Unidade", unidades_lista, index=uni_index)
                             urgencia_edit = st.checkbox("Urgente", value=bool(demanda_atual.get("urgencia", False)))
                             observacoes_edit = st.text_area("Observações", value=demanda_atual.get("observacoes") or "", height=100)
                         
@@ -1332,9 +1427,11 @@ def pagina_admin():
                                 "quantidade": int(quantidade_edit),
                                 "solicitante": solicitante_edit,
                                 "departamento": departamento_edit,
+                                "local": local_edit,
                                 "prioridade": prioridade_edit,
                                 "status": status_edit,
                                 "categoria": categoria_edit,
+                                "unidade": unidade_edit,
                                 "urgencia": bool(urgencia_edit),
                                 "observacoes": observacoes_edit,
                                 "estimativa_horas": demanda_atual.get("estimativa_horas"),
