@@ -16,7 +16,7 @@ st.set_page_config(
     page_title="Sistema de Demandas - Railway",
     page_icon="🚂",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"  # Sidebar inicialmente fechada
 )
 
 # ============================================
@@ -391,140 +391,47 @@ def obter_estatisticas():
         return {}
 
 # ============================================
-# INTERFACE STREAMLIT
+# FUNÇÕES PARA PÁGINAS ESPECÍFICAS
 # ============================================
 
-if "init_complete" not in st.session_state:
-    conexao_ok, mensagem = test_db_connection()
-    if conexao_ok:
-        init_ok, init_msg = init_database()
-        if init_ok:
-            st.session_state.init_complete = True
-            st.sidebar.success(mensagem)
-        else:
-            st.sidebar.warning(init_msg)
-    else:
-        st.sidebar.error(mensagem)
-        st.session_state.demo_mode = True
-    st.session_state.filtros = {}
-
-st.title("🚂 Sistema de Demandas - Railway")
-st.caption("Gerenciamento centralizado de solicitações da equipe")
-
-with st.sidebar:
-    st.header("🔧 Configuração")
-
-    if DATABASE_URL:
-        st.success("✅ Conectado ao Railway Postgres")
-        cfg = get_db_config()
-        st.info(
-            f"**Host:** {cfg.get('host', 'N/A')}\n"
-            f"**Banco:** {cfg.get('database', 'N/A')}\n"
-            f"**Usuário:** {cfg.get('user', 'N/A')}"
-        )
-    else:
-        st.warning("⚠️ DATABASE_URL não encontrada")
-        st.info("Configure a variável DATABASE_URL no Railway")
-
-    st.header("📋 Navegação")
-    menu_opcoes = ["🏠 Dashboard", "📝 Nova Demanda", "🔍 Buscar Demandas", "⚙️ Administração"]
-    menu_selecionado = st.radio("Selecione uma opção:", menu_opcoes)
-
-    if menu_selecionado in ["🔍 Buscar Demandas", "🏠 Dashboard"]:
-        st.subheader("🔎 Filtros Rápidos")
-
-        status_filtro = st.multiselect(
-            "Status",
-            ["Pendente", "Em andamento", "Concluída", "Cancelada"],
-            default=["Pendente", "Em andamento"]
-        )
-
-        prioridade_filtro = st.multiselect(
-            "Prioridade",
-            ["Urgente", "Alta", "Média", "Baixa"],
-            default=["Urgente", "Alta", "Média"]
-        )
-
-        if st.button("Aplicar Filtros"):
-            st.session_state.filtros = {
-                "status": status_filtro,
-                "prioridade": prioridade_filtro
-            }
+def pagina_inicial():
+    """Página inicial com opção de solicitação ou administrador"""
+    st.title("🚂 Sistema de Demandas - Railway")
+    st.markdown("---")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📝 Nova Solicitação")
+        st.markdown("""
+        **Para usuários que desejam enviar uma nova demanda:**
+        - Preencha o formulário de solicitação
+        - Acompanhe o status da sua demanda
+        - Receba confirmação imediata
+        """)
+        if st.button("📄 Enviar Solicitação", type="primary", use_container_width=True, key="btn_solicitacao"):
+            st.session_state.pagina_atual = "solicitacao"
             st.rerun()
-
-        if st.button("Limpar Filtros"):
-            st.session_state.filtros = {}
+    
+    with col2:
+        st.subheader("🔧 Área Administrativa")
+        st.markdown("""
+        **Para administradores do sistema:**
+        - Visualize todas as demandas
+        - Gerencie status e prioridades
+        - Acesse estatísticas e relatórios
+        """)
+        if st.button("🔐 Acessar como Administrador", use_container_width=True, key="btn_admin"):
+            st.session_state.pagina_atual = "login_admin"
             st.rerun()
+    
+    st.markdown("---")
+    st.caption("Selecione uma opção para continuar")
 
-# ============================================
-# PÁGINAS DO SISTEMA
-# ============================================
-
-if menu_selecionado == "🏠 Dashboard":
-    st.header("📊 Dashboard de Demandas")
-
-    estatisticas = obter_estatisticas()
-
-    if estatisticas:
-        totais = estatisticas.get("totais", {})
-
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Demandas", totais.get("total", 0))
-        with col2:
-            st.metric("Pendentes", totais.get("pendentes", 0))
-        with col3:
-            st.metric("Urgentes", totais.get("urgentes", 0), delta_color="inverse")
-        with col4:
-            st.metric("Total Itens", totais.get("total_itens", 0))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if estatisticas.get("por_departamento"):
-                st.subheader("Por Departamento")
-                df_dept = pd.DataFrame(
-                    list(estatisticas["por_departamento"].items()),
-                    columns=["Departamento", "Quantidade"]
-                )
-                st.bar_chart(df_dept.set_index("Departamento"))
-
-        with col2:
-            if estatisticas.get("por_prioridade"):
-                st.subheader("Por Prioridade")
-                df_pri = pd.DataFrame(
-                    list(estatisticas["por_prioridade"].items()),
-                    columns=["Prioridade", "Quantidade"]
-                )
-                st.bar_chart(df_pri.set_index("Prioridade"))
-
-        st.subheader("📋 Últimas Solicitações")
-        demandas_recentes = carregar_demandas(st.session_state.filtros)[:10]
-
-        if demandas_recentes:
-            df_recentes = pd.DataFrame(demandas_recentes)
-            df_display = df_recentes.rename(columns={
-                "id": "ID",
-                "item": "Item",
-                "quantidade": "Qtd",
-                "solicitante": "Solicitante",
-                "departamento": "Depto",
-                "prioridade": "Prioridade",
-                "status": "Status",
-                "data_criacao_formatada": "Data"
-            })
-            st.dataframe(
-                df_display[["ID", "Item", "Qtd", "Solicitante", "Depto", "Prioridade", "Status", "Data"]],
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("Nenhuma demanda encontrada com os filtros atuais.")
-    else:
-        st.info("Sem estatísticas ainda. Verifique a conexão com o banco.")
-
-elif menu_selecionado == "📝 Nova Demanda":
-    st.header("➕ Nova Solicitação")
-
+def pagina_solicitacao():
+    """Página de solicitação para usuários comuns"""
+    st.header("📝 Nova Solicitação")
+    
     with st.form("form_nova_demanda", clear_on_submit=True):
         col1, col2 = st.columns(2)
 
@@ -577,294 +484,419 @@ elif menu_selecionado == "📝 Nova Demanda":
                     st.balloons()
                     with st.expander("📋 Ver Resumo da Solicitação"):
                         st.json(nova_demanda)
+                    
+                    # Botão para nova solicitação
+                    if st.button("📝 Enviar Nova Solicitação"):
+                        st.rerun()
+                        
+                    # Botão para voltar ao início
+                    if st.button("🏠 Voltar ao Início"):
+                        st.session_state.pagina_atual = "inicio"
+                        st.rerun()
                 else:
                     st.error("❌ Erro ao salvar a solicitação.")
             else:
                 st.error("⚠️ Por favor, preencha todos os campos obrigatórios (*)")
+    
+    # Botão para voltar ao início (fora do formulário)
+    if st.button("← Voltar ao Início", key="voltar_solicitacao"):
+        st.session_state.pagina_atual = "inicio"
+        st.rerun()
 
-elif menu_selecionado == "🔍 Buscar Demandas":
-    st.header("🔍 Buscar e Gerenciar Demandas")
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        busca = st.text_input("🔎 Buscar por texto (item ou solicitante):")
+def pagina_login_admin():
+    """Página de login para administradores"""
+    st.title("🔧 Área Administrativa")
+    st.markdown("---")
+    
+    st.warning("🔒 Acesso Restrito - Autenticação Necessária")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        if busca:
-            st.session_state.filtros["search"] = busca
+        with st.form("form_admin_login"):
+            senha = st.text_input("🔑 Senha de administrador:", type="password")
+            login_submit = st.form_submit_button("🔓 Entrar", type="primary")
+            
+            if login_submit:
+                if senha == ADMIN_PASSWORD:
+                    st.session_state.admin_autenticado = True
+                    st.session_state.pagina_atual = "admin"
+                    st.rerun()
+                else:
+                    st.error("❌ Senha incorreta!")
+    
+    # Botão para voltar ao início
+    if st.button("← Voltar ao Início", key="voltar_login"):
+        st.session_state.pagina_atual = "inicio"
+        st.rerun()
+
+def pagina_admin():
+    """Página principal do administrador com sidebar"""
+    # Configurar sidebar para admin
+    st.sidebar.title("🔧 Administração")
+    
+    # Menu de navegação para admin
+    menu_opcoes = ["🏠 Dashboard", "📋 Todas as Demandas", "✏️ Editar Demanda", 
+                   "📊 Estatísticas", "⚙️ Configurações"]
+    menu_selecionado = st.sidebar.radio("Navegação", menu_opcoes)
+    
+    # Filtros na sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔎 Filtros")
+    
+    status_filtro = st.sidebar.multiselect(
+        "Status",
+        ["Pendente", "Em andamento", "Concluída", "Cancelada"],
+        default=["Pendente", "Em andamento"]
+    )
+
+    prioridade_filtro = st.sidebar.multiselect(
+        "Prioridade",
+        ["Urgente", "Alta", "Média", "Baixa"],
+        default=["Urgente", "Alta", "Média"]
+    )
+    
+    # Botão de logout
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🚪 Logout", type="secondary"):
+        st.session_state.admin_autenticado = False
+        st.session_state.pagina_atual = "inicio"
+        st.rerun()
+    
+    # Aplicar filtros
+    filtros = {}
+    if status_filtro:
+        filtros["status"] = status_filtro
+    if prioridade_filtro:
+        filtros["prioridade"] = prioridade_filtro
+    
+    # Conteúdo principal baseado na seleção do menu
+    if menu_selecionado == "🏠 Dashboard":
+        st.header("📊 Dashboard de Demandas")
+        
+        estatisticas = obter_estatisticas()
+        
+        if estatisticas:
+            totais = estatisticas.get("totais", {})
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Demandas", totais.get("total", 0))
+            with col2:
+                st.metric("Pendentes", totais.get("pendentes", 0))
+            with col3:
+                st.metric("Urgentes", totais.get("urgentes", 0), delta_color="inverse")
+            with col4:
+                st.metric("Total Itens", totais.get("total_itens", 0))
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if estatisticas.get("por_departamento"):
+                    st.subheader("Por Departamento")
+                    df_dept = pd.DataFrame(
+                        list(estatisticas["por_departamento"].items()),
+                        columns=["Departamento", "Quantidade"]
+                    )
+                    st.bar_chart(df_dept.set_index("Departamento"))
+            
+            with col2:
+                if estatisticas.get("por_prioridade"):
+                    st.subheader("Por Prioridade")
+                    df_pri = pd.DataFrame(
+                        list(estatisticas["por_prioridade"].items()),
+                        columns=["Prioridade", "Quantidade"]
+                    )
+                    st.bar_chart(df_pri.set_index("Prioridade"))
+            
+            st.subheader("📋 Últimas Solicitações")
+            demandas_recentes = carregar_demandas(filtros)[:10]
+            
+            if demandas_recentes:
+                df_recentes = pd.DataFrame(demandas_recentes)
+                df_display = df_recentes.rename(columns={
+                    "id": "ID",
+                    "item": "Item",
+                    "quantidade": "Qtd",
+                    "solicitante": "Solicitante",
+                    "departamento": "Depto",
+                    "prioridade": "Prioridade",
+                    "status": "Status",
+                    "data_criacao_formatada": "Data"
+                })
+                st.dataframe(
+                    df_display[["ID", "Item", "Qtd", "Solicitante", "Depto", "Prioridade", "Status", "Data"]],
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Nenhuma demanda encontrada com os filtros atuais.")
         else:
-            st.session_state.filtros.pop("search", None)
-
-    demandas = carregar_demandas(st.session_state.filtros)
-
-    if demandas:
-        st.info(f"📊 Encontradas **{len(demandas)}** demandas")
-        df = pd.DataFrame(demandas)
-
-        colunas_disponiveis = [
-            "id", "item", "quantidade", "solicitante", "departamento",
-            "prioridade", "status", "data_criacao_formatada", "categoria"
-        ]
-
-        colunas_selecionadas = st.multiselect(
-            "👁️ Colunas para exibir:",
-            colunas_disponiveis,
-            default=["id", "item", "quantidade", "solicitante", "departamento", "prioridade", "status"]
-        )
-
-        if colunas_selecionadas:
-            st.dataframe(df[colunas_selecionadas], use_container_width=True, hide_index=True)
-
-            col_exp1, col_exp2 = st.columns(2)
-            with col_exp1:
+            st.info("Sem estatísticas ainda. Verifique a conexão com o banco.")
+    
+    elif menu_selecionado == "📋 Todas as Demandas":
+        st.header("📋 Todas as Demandas")
+        
+        todas_demandas = carregar_demandas(filtros)
+        
+        if todas_demandas:
+            df_admin = pd.DataFrame(todas_demandas)
+            
+            # Campo de busca
+            busca = st.text_input("🔎 Buscar por texto (item ou solicitante):")
+            if busca:
+                filtros["search"] = busca
+                todas_demandas = carregar_demandas(filtros)
+                df_admin = pd.DataFrame(todas_demandas)
+            
+            st.info(f"📊 Encontradas **{len(todas_demandas)}** demandas")
+            
+            # Ações rápidas
+            col_acao1, col_acao2, col_acao3 = st.columns(3)
+            with col_acao1:
                 if st.button("📥 Exportar para CSV"):
-                    csv = df.to_csv(index=False)
+                    csv = df_admin.to_csv(index=False)
                     st.download_button(
                         label="Baixar CSV",
                         data=csv,
                         file_name=f"demandas_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
-    else:
-        st.info("🔍 Nenhuma demanda encontrada com os critérios atuais.")
-
-elif menu_selecionado == "⚙️ Administração":
-    st.header("⚙️ Área de Administração")
-
-    if "admin_autenticado" not in st.session_state:
-        st.session_state.admin_autenticado = False
-
-    if not st.session_state.admin_autenticado:
-        st.warning("🔒 Área restrita - Autenticação necessária")
-
-        with st.form("form_admin_login"):
-            senha = st.text_input("🔑 Senha de administrador:", type="password")
-            login_submit = st.form_submit_button("🔓 Entrar")
-
-            if login_submit:
-                if senha == ADMIN_PASSWORD:
-                    st.session_state.admin_autenticado = True
-                    st.rerun()
-                else:
-                    st.error("❌ Senha incorreta!")
-    else:
-        if st.sidebar.button("🚪 Logout"):
-            st.session_state.admin_autenticado = False
-            st.rerun()
-
-        st.success("✅ Autenticado como administrador")
-
-        tab1, tab2, tab3, tab4 = st.tabs(
-            ["📋 Todas as Demandas", "✏️ Editar Demanda", "📊 Estatísticas Avançadas", "⚙️ Configurações"]
-        )
-
-        with tab1:
-            st.subheader("📋 Todas as Demandas")
-            todas_demandas = carregar_demandas()
-
-            if todas_demandas:
-                df_admin = pd.DataFrame(todas_demandas)
-
-                st.subheader("⚡ Ações em Massa")
-                col_acao1, col_acao2, col_acao3 = st.columns(3)
-                with col_acao1:
-                    if st.button("🔄 Marcar todas como Concluídas"):
-                        st.warning("Funcionalidade em desenvolvimento")
-                with col_acao2:
-                    if st.button("📊 Gerar Relatório Completo"):
-                        st.info("Relatório sendo gerado...")
-                with col_acao3:
-                    if st.button("🧹 Limpar Histórico Antigo"):
-                        st.warning("Esta ação não pode ser desfeita!")
-
-                st.dataframe(
-                    df_admin,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "id": "ID",
-                        "item": "Item",
-                        "quantidade": "Qtd",
-                        "solicitante": "Solicitante",
-                        "departamento": "Depto",
-                        "prioridade": "Prioridade",
-                        "status": "Status",
-                        "data_criacao_formatada": "Criação",
-                        "data_atualizacao_formatada": "Última Atualização",
-                    },
-                )
-            else:
-                st.info("Ainda não existem demandas cadastradas.")
-
-        with tab2:
-            st.subheader("✏️ Editar Demanda")
-            todas_demandas = carregar_demandas()
-
-            if todas_demandas:
-                opcoes_demanda = [f"#{d['id']} - {d['item'][:50]}..." for d in todas_demandas]
-                selecao = st.selectbox("Selecione uma demanda:", opcoes_demanda)
-
-                if selecao:
-                    demanda_id = int(selecao.split("#")[1].split(" - ")[0])
-                    demanda_atual = next((d for d in todas_demandas if d["id"] == demanda_id), None)
-
-                    if demanda_atual:
-                        departamentos_lista = [
-                            "TI", "RH", "Financeiro", "Comercial", "Operações",
-                            "Marketing", "Suporte", "Vendas", "Desenvolvimento", "Outro"
-                        ]
-                        status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
-                        prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
-
-                        dep_index = departamentos_lista.index(demanda_atual["departamento"]) if demanda_atual["departamento"] in departamentos_lista else len(departamentos_lista) - 1
-                        pri_index = prioridade_lista.index(demanda_atual["prioridade"]) if demanda_atual["prioridade"] in prioridade_lista else 1
-                        st_index = status_lista.index(demanda_atual["status"]) if demanda_atual["status"] in status_lista else 0
-
-                        with st.form(f"form_editar_{demanda_id}"):
-                            col_e1, col_e2 = st.columns(2)
-
-                            with col_e1:
-                                item_edit = st.text_area("Descrição", value=demanda_atual["item"], height=100)
-                                quantidade_edit = st.number_input("Quantidade", min_value=1, value=int(demanda_atual["quantidade"]))
-                                solicitante_edit = st.text_input("Solicitante", value=demanda_atual["solicitante"])
-                                departamento_edit = st.selectbox("Departamento", departamentos_lista, index=dep_index)
-
-                            with col_e2:
-                                prioridade_edit = st.selectbox("Prioridade", prioridade_lista, index=pri_index)
-                                status_edit = st.selectbox("Status", status_lista, index=st_index)
-                                categoria_edit = st.text_input("Categoria", value=demanda_atual.get("categoria") or "Geral")
-                                urgencia_edit = st.checkbox("Urgente", value=bool(demanda_atual.get("urgencia", False)))
-                                observacoes_edit = st.text_area("Observações", value=demanda_atual.get("observacoes") or "", height=100)
-
-                            col_botoes1, col_botoes2, col_botoes3 = st.columns(3)
-                            with col_botoes1:
-                                salvar = st.form_submit_button("💾 Salvar Alterações", type="primary")
-                            with col_botoes2:
-                                excluir = st.form_submit_button("🗑️ Excluir Demanda", type="secondary")
-                            with col_botoes3:
-                                cancelar = st.form_submit_button("↻ Cancelar")
-
-                            if salvar:
-                                dados_atualizados = {
-                                    "item": item_edit,
-                                    "quantidade": int(quantidade_edit),
-                                    "solicitante": solicitante_edit,
-                                    "departamento": departamento_edit,
-                                    "prioridade": prioridade_edit,
-                                    "status": status_edit,
-                                    "categoria": categoria_edit,
-                                    "urgencia": bool(urgencia_edit),
-                                    "observacoes": observacoes_edit,
-                                    "estimativa_horas": demanda_atual.get("estimativa_horas"),
-                                }
-                                if atualizar_demanda(demanda_id, dados_atualizados):
-                                    st.success(f"✅ Demanda #{demanda_id} atualizada com sucesso!")
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Erro ao atualizar demanda")
-
-                            if excluir:
-                                if excluir_demanda(demanda_id):
-                                    st.warning(f"⚠️ Demanda #{demanda_id} excluída!")
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Erro ao excluir demanda")
-
-                            if cancelar:
-                                st.rerun()
-            else:
-                st.info("Não existem demandas para editar ainda.")
-
-        with tab3:
-            st.subheader("📊 Estatísticas Avançadas")
-            estatisticas = obter_estatisticas()
-
-            if estatisticas:
-                totais = estatisticas.get("totais", {})
-                st.metric("Total de Horas Estimadas", f"{float(totais.get('total_horas', 0) or 0):.1f}h")
-
-                col_s1, col_s2 = st.columns(2)
-                with col_s1:
-                    if estatisticas.get("por_status"):
-                        st.subheader("Distribuição por Status")
-                        df_status = pd.DataFrame(
-                            list(estatisticas["por_status"].items()),
-                            columns=["Status", "Quantidade"]
-                        )
-                        st.bar_chart(df_status.set_index("Status"))
-
-                with col_s2:
-                    try:
-                        with get_db_connection() as conn:
-                            with conn.cursor() as cur:
-                                cur.execute("""
-                                    SELECT DATE(data_criacao) as data, COUNT(*) as quantidade
-                                    FROM demandas
-                                    WHERE data_criacao >= CURRENT_DATE - INTERVAL '7 days'
-                                    GROUP BY DATE(data_criacao)
-                                    ORDER BY data
-                                """)
-                                dados_periodo = cur.fetchall()
-
-                        if dados_periodo:
-                            df_periodo = pd.DataFrame(dados_periodo, columns=["Data", "Quantidade"])
-                            st.subheader("Demandas nos últimos 7 dias")
-                            st.line_chart(df_periodo.set_index("Data"))
-                        else:
-                            st.info("Sem dados nos últimos 7 dias.")
-                    except Exception:
-                        st.info("Não foi possível carregar dados temporais")
-
-        with tab4:
-            st.subheader("⚙️ Configurações do Sistema")
-            cfg = get_db_config()
-            st.code(
-                "Host: {h}\nDatabase: {d}\nUser: {u}\nPort: {p}\nSSL: {s}".format(
-                    h=cfg.get("host", "N/A"),
-                    d=cfg.get("database", "N/A"),
-                    u=cfg.get("user", "N/A"),
-                    p=cfg.get("port", "N/A"),
-                    s=cfg.get("sslmode", "N/A"),
-                )
+            
+            st.dataframe(
+                df_admin,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "id": "ID",
+                    "item": "Item",
+                    "quantidade": "Qtd",
+                    "solicitante": "Solicitante",
+                    "departamento": "Depto",
+                    "prioridade": "Prioridade",
+                    "status": "Status",
+                    "data_criacao_formatada": "Criação",
+                    "data_atualizacao_formatada": "Última Atualização",
+                },
             )
+        else:
+            st.info("Ainda não existem demandas cadastradas.")
+    
+    elif menu_selecionado == "✏️ Editar Demanda":
+        st.header("✏️ Editar Demanda")
+        todas_demandas = carregar_demandas()
+        
+        if todas_demandas:
+            opcoes_demanda = [f"#{d['id']} - {d['item'][:50]}..." for d in todas_demandas]
+            selecao = st.selectbox("Selecione uma demanda:", opcoes_demandas)
+            
+            if selecao:
+                demanda_id = int(selecao.split("#")[1].split(" - ")[0])
+                demanda_atual = next((d for d in todas_demandas if d["id"] == demanda_id), None)
+                
+                if demanda_atual:
+                    departamentos_lista = [
+                        "TI", "RH", "Financeiro", "Comercial", "Operações",
+                        "Marketing", "Suporte", "Vendas", "Desenvolvimento", "Outro"
+                    ]
+                    status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
+                    prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
+                    
+                    dep_index = departamentos_lista.index(demanda_atual["departamento"]) if demanda_atual["departamento"] in departamentos_lista else len(departamentos_lista) - 1
+                    pri_index = prioridade_lista.index(demanda_atual["prioridade"]) if demanda_atual["prioridade"] in prioridade_lista else 1
+                    st_index = status_lista.index(demanda_atual["status"]) if demanda_atual["status"] in status_lista else 0
+                    
+                    with st.form(f"form_editar_{demanda_id}"):
+                        col_e1, col_e2 = st.columns(2)
+                        
+                        with col_e1:
+                            item_edit = st.text_area("Descrição", value=demanda_atual["item"], height=100)
+                            quantidade_edit = st.number_input("Quantidade", min_value=1, value=int(demanda_atual["quantidade"]))
+                            solicitante_edit = st.text_input("Solicitante", value=demanda_atual["solicitante"])
+                            departamento_edit = st.selectbox("Departamento", departamentos_lista, index=dep_index)
+                        
+                        with col_e2:
+                            prioridade_edit = st.selectbox("Prioridade", prioridade_lista, index=pri_index)
+                            status_edit = st.selectbox("Status", status_lista, index=st_index)
+                            categoria_edit = st.text_input("Categoria", value=demanda_atual.get("categoria") or "Geral")
+                            urgencia_edit = st.checkbox("Urgente", value=bool(demanda_atual.get("urgencia", False)))
+                            observacoes_edit = st.text_area("Observações", value=demanda_atual.get("observacoes") or "", height=100)
+                        
+                        col_botoes1, col_botoes2, col_botoes3 = st.columns(3)
+                        with col_botoes1:
+                            salvar = st.form_submit_button("💾 Salvar Alterações", type="primary")
+                        with col_botoes2:
+                            excluir = st.form_submit_button("🗑️ Excluir Demanda", type="secondary")
+                        with col_botoes3:
+                            cancelar = st.form_submit_button("↻ Cancelar")
+                        
+                        if salvar:
+                            dados_atualizados = {
+                                "item": item_edit,
+                                "quantidade": int(quantidade_edit),
+                                "solicitante": solicitante_edit,
+                                "departamento": departamento_edit,
+                                "prioridade": prioridade_edit,
+                                "status": status_edit,
+                                "categoria": categoria_edit,
+                                "urgencia": bool(urgencia_edit),
+                                "observacoes": observacoes_edit,
+                                "estimativa_horas": demanda_atual.get("estimativa_horas"),
+                            }
+                            if atualizar_demanda(demanda_id, dados_atualizados):
+                                st.success(f"✅ Demanda #{demanda_id} atualizada com sucesso!")
+                                st.rerun()
+                            else:
+                                st.error("❌ Erro ao atualizar demanda")
+                        
+                        if excluir:
+                            if excluir_demanda(demanda_id):
+                                st.warning(f"⚠️ Demanda #{demanda_id} excluída!")
+                                st.rerun()
+                            else:
+                                st.error("❌ Erro ao excluir demanda")
+                        
+                        if cancelar:
+                            st.rerun()
+        else:
+            st.info("Não existem demandas para editar ainda.")
+    
+    elif menu_selecionado == "📊 Estatísticas":
+        st.header("📊 Estatísticas Avançadas")
+        estatisticas = obter_estatisticas()
+        
+        if estatisticas:
+            totais = estatisticas.get("totais", {})
+            st.metric("Total de Horas Estimadas", f"{float(totais.get('total_horas', 0) or 0):.1f}h")
+            
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                if estatisticas.get("por_status"):
+                    st.subheader("Distribuição por Status")
+                    df_status = pd.DataFrame(
+                        list(estatisticas["por_status"].items()),
+                        columns=["Status", "Quantidade"]
+                    )
+                    st.bar_chart(df_status.set_index("Status"))
+            
+            with col_s2:
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                SELECT DATE(data_criacao) as data, COUNT(*) as quantidade
+                                FROM demandas
+                                WHERE data_criacao >= CURRENT_DATE - INTERVAL '7 days'
+                                GROUP BY DATE(data_criacao)
+                                ORDER BY data
+                            """)
+                            dados_periodo = cur.fetchall()
+                    
+                    if dados_periodo:
+                        df_periodo = pd.DataFrame(dados_periodo, columns=["Data", "Quantidade"])
+                        st.subheader("Demandas nos últimos 7 dias")
+                        st.line_chart(df_periodo.set_index("Data"))
+                    else:
+                        st.info("Sem dados nos últimos 7 dias.")
+                except Exception:
+                    st.info("Não foi possível carregar dados temporais")
+    
+    elif menu_selecionado == "⚙️ Configurações":
+        st.header("⚙️ Configurações do Sistema")
+        cfg = get_db_config()
+        st.code(
+            "Host: {h}\nDatabase: {d}\nUser: {u}\nPort: {p}\nSSL: {s}".format(
+                h=cfg.get("host", "N/A"),
+                d=cfg.get("database", "N/A"),
+                u=cfg.get("user", "N/A"),
+                p=cfg.get("port", "N/A"),
+                s=cfg.get("sslmode", "N/A"),
+            )
+        )
+        
+        if st.button("🔄 Testar Conexão com Banco"):
+            conexao_ok, mensagem = test_db_connection()
+            if conexao_ok:
+                st.success(mensagem)
+            else:
+                st.error(mensagem)
+        
+        st.subheader("📈 Informações do Sistema")
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT
+                            COUNT(*) as total_demandas,
+                            MIN(data_criacao) as primeira_demanda,
+                            MAX(data_criacao) as ultima_demanda
+                        FROM demandas
+                    """)
+                    info = cur.fetchone()
+            
+            if info:
+                st.metric("Total de Demandas no Banco", info[0])
+                st.caption(f"Primeira demanda: {info[1].strftime('%d/%m/%Y') if info[1] else 'N/A'}")
+                st.caption(f"Última demanda: {info[2].strftime('%d/%m/%Y %H:%M') if info[2] else 'N/A'}")
+        except Exception:
+            st.info("Não foi possível carregar informações do sistema")
 
-            if st.button("🔄 Testar Conexão com Banco"):
-                conexao_ok, mensagem = test_db_connection()
-                if conexao_ok:
-                    st.success(mensagem)
-                else:
-                    st.error(mensagem)
+# ============================================
+# INICIALIZAÇÃO E ROTEAMENTO
+# ============================================
 
-            st.subheader("📈 Informações do Sistema")
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            SELECT
-                                COUNT(*) as total_demandas,
-                                MIN(data_criacao) as primeira_demanda,
-                                MAX(data_criacao) as ultima_demanda
-                            FROM demandas
-                        """)
-                        info = cur.fetchone()
+# Inicializar estado da sessão
+if "init_complete" not in st.session_state:
+    conexao_ok, mensagem = test_db_connection()
+    if conexao_ok:
+        init_ok, init_msg = init_database()
+        if init_ok:
+            st.session_state.init_complete = True
+        else:
+            st.warning(init_msg)
+    else:
+        st.error(mensagem)
+        st.session_state.demo_mode = True
 
-                if info:
-                    st.metric("Total de Demandas no Banco", info[0])
-                    st.caption(f"Primeira demanda: {info[1].strftime('%d/%m/%Y') if info[1] else 'N/A'}")
-                    st.caption(f"Última demanda: {info[2].strftime('%d/%m/%Y %H:%M') if info[2] else 'N/A'}")
-            except Exception:
-                st.info("Não foi possível carregar informações do sistema")
+if "pagina_atual" not in st.session_state:
+    st.session_state.pagina_atual = "inicio"
+
+if "admin_autenticado" not in st.session_state:
+    st.session_state.admin_autenticado = False
+
+if "filtros" not in st.session_state:
+    st.session_state.filtros = {}
+
+# Roteamento das páginas
+if st.session_state.pagina_atual == "inicio":
+    pagina_inicial()
+elif st.session_state.pagina_atual == "solicitacao":
+    pagina_solicitacao()
+elif st.session_state.pagina_atual == "login_admin":
+    pagina_login_admin()
+elif st.session_state.pagina_atual == "admin" and st.session_state.admin_autenticado:
+    pagina_admin()
+else:
+    # Se tentar acessar admin sem autenticação, voltar para login
+    st.session_state.pagina_atual = "login_admin"
+    st.rerun()
 
 # ============================================
 # RODAPÉ
 # ============================================
 
-st.sidebar.markdown("---")
-st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas v1.0")
-st.sidebar.caption("Conectado ao Railway PostgreSQL")
-
-if DATABASE_URL and st.sidebar.checkbox("Mostrar informações de debug"):
-    cfg = get_db_config()
-    st.sidebar.text(f"Host: {cfg.get('host')}")
-    st.sidebar.text(f"Database: {cfg.get('database')}")
-    st.sidebar.text(f"User: {cfg.get('user')}")
-    st.sidebar.text(f"Port: {cfg.get('port')}")
+# Mostrar informações de conexão apenas nas páginas apropriadas
+if st.session_state.pagina_atual in ["admin", "solicitacao"]:
+    st.sidebar.markdown("---")
+    
+    if DATABASE_URL:
+        st.sidebar.success("✅ Conectado ao Railway Postgres")
+        if st.sidebar.checkbox("Mostrar informações de debug", key="debug_info"):
+            cfg = get_db_config()
+            st.sidebar.text(f"Host: {cfg.get('host')}")
+            st.sidebar.text(f"Database: {cfg.get('database')}")
+            st.sidebar.text(f"User: {cfg.get('user')}")
+            st.sidebar.text(f"Port: {cfg.get('port')}")
+    else:
+        st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
+    
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas v1.0")
+    st.sidebar.caption("Conectado ao Railway PostgreSQL")
