@@ -1188,13 +1188,13 @@ def pagina_admin():
     status_filtro = st.sidebar.multiselect(
         "Status",
         ["Pendente", "Em andamento", "Concluída", "Cancelada"],
-        default=["Pendente", "Em andamento"]
+        default=["Pendente", "Em andamento", "Concluída", "Cancelada"]
     )
 
     prioridade_filtro = st.sidebar.multiselect(
         "Prioridade",
         ["Urgente", "Alta", "Média", "Baixa"],
-        default=["Urgente", "Alta", "Média"]
+        default=["Urgente", "Alta", "Média", "Baixa"]
     )
     
     # Botão de logout
