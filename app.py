@@ -795,7 +795,7 @@ def pagina_solicitacao():
             )
 
         with col2:
-            item = st.text_area("📝 Descrição da Demanda*", height=100)
+            item = st.text_input("📝 Descrição da Demanda*")
             quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
             estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5)
 
