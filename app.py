@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import json
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
@@ -151,6 +152,26 @@ def init_database():
         return False, f"❌ Erro ao inicializar banco: {str(e)}"
 
 # ============================================
+# UTILITÁRIO JSON SEGURO
+# ============================================
+
+def json_safe(obj):
+    """Converte tipos não JSON (datetime, date, Decimal etc.) para serializáveis."""
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return obj
+
+def dumps_safe(payload):
+    """json.dumps sem quebrar com datetime, Decimal e similares."""
+    return json.dumps(json_safe(payload), ensure_ascii=False, default=str)
+
+# ============================================
 # FUNÇÕES DO SISTEMA
 # ============================================
 
@@ -233,7 +254,7 @@ def adicionar_demanda(dados):
                 cur.execute("""
                     INSERT INTO historico_demandas (demanda_id, usuario, acao, detalhes)
                     VALUES (%s, %s, %s, %s)
-                """, (nova_id, dados["solicitante"], "CRIAÇÃO", json.dumps(dados)))
+                """, (nova_id, dados["solicitante"], "CRIAÇÃO", dumps_safe(dados)))
 
                 conn.commit()
                 return nova_id
@@ -248,8 +269,6 @@ def atualizar_demanda(demanda_id, dados):
                 cur.execute("SELECT * FROM demandas WHERE id = %s", (demanda_id,))
                 dados_antigos = cur.fetchone()
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
                 cur.execute("""
                     UPDATE demandas
                     SET item = %s, quantidade = %s, solicitante = %s,
@@ -278,7 +297,7 @@ def atualizar_demanda(demanda_id, dados):
                     demanda_id,
                     "Administrador",
                     "ATUALIZAÇÃO",
-                    json.dumps({
+                    dumps_safe({
                         "antigo": dados_antigos if dados_antigos else {},
                         "novo": dados
                     })
@@ -297,8 +316,6 @@ def excluir_demanda(demanda_id):
                 cur.execute("SELECT * FROM demandas WHERE id = %s", (demanda_id,))
                 dados = cur.fetchone()
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO historico_demandas (demanda_id, usuario, acao, detalhes)
                     VALUES (%s, %s, %s, %s)
@@ -306,7 +323,7 @@ def excluir_demanda(demanda_id):
                     demanda_id,
                     "Administrador",
                     "EXCLUSÃO",
-                    json.dumps(dados if dados else {})
+                    dumps_safe(dados if dados else {})
                 ))
 
                 cur.execute("DELETE FROM demandas WHERE id = %s", (demanda_id,))
