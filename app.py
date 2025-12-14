@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 from decimal import Decimal
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import os
 from urllib.parse import urlparse
 import hashlib
+import pytz
 
 # =============================
 # Configuração da página
@@ -19,6 +20,30 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"  # Sidebar inicialmente fechada
 )
+
+# ============================================
+# CONFIGURAÇÃO DO FUSO HORÁRIO (FORTALEZA - UTC-3)
+# ============================================
+
+FORTALEZA_TZ = pytz.timezone('America/Fortaleza')
+
+def agora_fortaleza():
+    """Retorna o horário atual em Fortaleza"""
+    return datetime.now(FORTALEZA_TZ)
+
+def converter_para_fortaleza(dt):
+    """Converte um datetime para o fuso horário de Fortaleza"""
+    if dt.tzinfo is None:
+        # Se não tem timezone, assume UTC
+        dt = pytz.utc.localize(dt)
+    return dt.astimezone(FORTALEZA_TZ)
+
+def formatar_data_hora_fortaleza(dt, formato='%d/%m/%Y %H:%M'):
+    """Formata um datetime para o fuso horário de Fortaleza"""
+    if dt:
+        dt_fortaleza = converter_para_fortaleza(dt)
+        return dt_fortaleza.strftime(formato)
+    return ""
 
 # ============================================
 # CONFIGURAÇÃO DA CONEXÃO COM RAILWAY POSTGRES
@@ -191,6 +216,9 @@ def init_database():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 # Tabela de demandas
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS demandas (
@@ -262,6 +290,9 @@ def autenticar_usuario(username, senha):
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 cur.execute("""
                     SELECT id, nome, email, username, senha_hash, 
                            nivel_acesso, is_admin, departamento, ativo
@@ -290,6 +321,9 @@ def criar_usuario(dados_usuario):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 # Verificar se username ou email já existem
                 cur.execute("""
                     SELECT COUNT(*) FROM usuarios 
@@ -328,11 +362,14 @@ def listar_usuarios():
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 cur.execute("""
                     SELECT id, nome, email, username, departamento, 
                            nivel_acesso, is_admin, ativo,
-                           TO_CHAR(data_cadastro, 'DD/MM/YYYY') as data_cadastro,
-                           TO_CHAR(ultimo_login, 'DD/MM/YYYY HH24:MI') as ultimo_login
+                           TO_CHAR(data_cadastro AT TIME ZONE 'America/Fortaleza', 'DD/MM/YYYY') as data_cadastro,
+                           TO_CHAR(ultimo_login AT TIME ZONE 'America/Fortaleza', 'DD/MM/YYYY HH24:MI') as ultimo_login
                     FROM usuarios
                     ORDER BY nome
                 """)
@@ -346,6 +383,9 @@ def atualizar_usuario(usuario_id, dados_atualizados):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 # Construir query dinamicamente
                 campos = []
                 valores = []
@@ -375,6 +415,9 @@ def excluir_usuario(usuario_id):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 cur.execute("""
                     UPDATE usuarios 
                     SET ativo = FALSE 
@@ -413,11 +456,14 @@ def carregar_demandas(filtros=None):
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 query = """
                     SELECT id, item, quantidade, solicitante, departamento,
                            prioridade, observacoes, status, categoria, urgencia,
-                           TO_CHAR(data_criacao, 'DD/MM/YYYY HH24:MI') as data_criacao_formatada,
-                           TO_CHAR(data_atualizacao, 'DD/MM/YYYY HH24:MI') as data_atualizacao_formatada,
+                           data_criacao,
+                           data_atualizacao,
                            estimativa_horas
                     FROM demandas
                     WHERE 1=1
@@ -457,7 +503,20 @@ def carregar_demandas(filtros=None):
                 query += " data_criacao DESC"
 
                 cur.execute(query, params)
-                return cur.fetchall()
+                demandas = cur.fetchall()
+                
+                # Formatar datas para Fortaleza
+                for demanda in demandas:
+                    if demanda.get("data_criacao"):
+                        demanda["data_criacao_formatada"] = formatar_data_hora_fortaleza(
+                            demanda["data_criacao"], '%d/%m/%Y %H:%M'
+                        )
+                    if demanda.get("data_atualizacao"):
+                        demanda["data_atualizacao_formatada"] = formatar_data_hora_fortaleza(
+                            demanda["data_atualizacao"], '%d/%m/%Y %H:%M'
+                        )
+                
+                return demandas
     except Exception as e:
         st.error(f"Erro ao carregar demandas: {str(e)}")
         return []
@@ -466,11 +525,14 @@ def adicionar_demanda(dados):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 cur.execute("""
                     INSERT INTO demandas
                     (item, quantidade, solicitante, departamento, prioridade, observacoes, categoria, urgencia, estimativa_horas)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
+                    RETURNING id, data_criacao
                 """, (
                     dados["item"],
                     dados["quantidade"],
@@ -483,7 +545,9 @@ def adicionar_demanda(dados):
                     dados.get("estimativa_horas")
                 ))
 
-                nova_id = cur.fetchone()[0]
+                resultado = cur.fetchone()
+                nova_id = resultado[0]
+                data_criacao = resultado[1]
 
                 cur.execute("""
                     INSERT INTO historico_demandas (demanda_id, usuario, acao, detalhes)
@@ -500,6 +564,9 @@ def atualizar_demanda(demanda_id, dados):
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 cur.execute("SELECT * FROM demandas WHERE id = %s", (demanda_id,))
                 dados_antigos = cur.fetchone()
 
@@ -549,6 +616,9 @@ def excluir_demanda(demanda_id):
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 cur.execute("SELECT * FROM demandas WHERE id = %s", (demanda_id,))
                 dados = cur.fetchone()
 
@@ -575,6 +645,9 @@ def obter_estatisticas():
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Configurar timezone para Fortaleza
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                
                 estatisticas = {}
 
                 cur.execute("""
@@ -634,6 +707,10 @@ def obter_estatisticas():
 
 def pagina_inicial():
     """Página inicial com opção de solicitação ou administrador"""
+    # Mostrar horário atual de Fortaleza
+    agora = agora_fortaleza()
+    st.sidebar.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
+    
     st.title("🚂 Sistema de Demandas - Railway")
     st.markdown("---")
     
@@ -664,11 +741,16 @@ def pagina_inicial():
             st.rerun()
     
     st.markdown("---")
+    st.caption(f"🕒 Horário atual: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Fortaleza - UTC-3)")
     st.caption("Selecione uma opção para continuar")
 
 def pagina_solicitacao():
     """Página de solicitação para usuários comuns"""
     st.header("📝 Nova Solicitação")
+    
+    # Mostrar horário atual
+    agora = agora_fortaleza()
+    st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
     
     # Usar uma variável de sessão para controlar se o formulário foi enviado
     if "solicitacao_enviada" not in st.session_state:
@@ -764,6 +846,10 @@ def pagina_login_admin():
     st.title("🔧 Área Administrativa")
     st.markdown("---")
     
+    # Mostrar horário atual
+    agora = agora_fortaleza()
+    st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
+    
     st.warning("🔒 Acesso Restrito - Autenticação Necessária")
     
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -801,6 +887,10 @@ def pagina_login_admin():
 def pagina_gerenciar_usuarios():
     """Página para gerenciar usuários do sistema"""
     st.header("👥 Gerenciamento de Usuários")
+    
+    # Mostrar horário atual
+    agora = agora_fortaleza()
+    st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
     
     # Verificar permissões
     if not st.session_state.get("usuario_admin", False):
@@ -990,6 +1080,10 @@ def pagina_admin():
         st.rerun()
         return
     
+    # Mostrar horário atual no sidebar
+    agora = agora_fortaleza()
+    st.sidebar.caption(f"🕒 {agora.strftime('%d/%m/%Y %H:%M')} (Fortaleza)")
+    
     # Configurar sidebar para admin
     st.sidebar.title("🔧 Administração")
     
@@ -1044,6 +1138,9 @@ def pagina_admin():
     if prioridade_filtro:
         filtros["prioridade"] = prioridade_filtro
     
+    # Mostrar horário atual no conteúdo principal
+    st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M:%S')}")
+    
     # Conteúdo principal baseado na seleção do menu
     if menu_selecionado == "🏠 Dashboard":
         st.header("📊 Dashboard de Demandas")
@@ -1095,10 +1192,11 @@ def pagina_admin():
                     "departamento": "Depto",
                     "prioridade": "Prioridade",
                     "status": "Status",
-                    "data_criacao_formatada": "Data"
+                    "data_criacao_formatada": "Data Criação",
+                    "data_atualizacao_formatada": "Última Atualização"
                 })
                 st.dataframe(
-                    df_display[["ID", "Item", "Qtd", "Solicitante", "Depto", "Prioridade", "Status", "Data"]],
+                    df_display[["ID", "Item", "Qtd", "Solicitante", "Depto", "Prioridade", "Status", "Data Criação"]],
                     use_container_width=True,
                     hide_index=True
                 )
@@ -1133,7 +1231,7 @@ def pagina_admin():
                         st.download_button(
                             label="Baixar CSV",
                             data=csv,
-                            file_name=f"demandas_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            file_name=f"demandas_export_{agora.strftime('%Y%m%d_%H%M%S')}.csv",
                             mime="text/csv"
                         )
             
@@ -1166,7 +1264,7 @@ def pagina_admin():
         todas_demandas = carregar_demandas()
         
         if todas_demandas:
-            opcoes_demanda = [f"#{d['id']} - {d['item'][:50]}..." for d in todas_demandas]
+            opcoes_demanda = [f"#{d['id']} - {d['item'][:50]}... (Criado: {d.get('data_criacao_formatada', 'N/A')})" for d in todas_demandas]
             selecao = st.selectbox("Selecione uma demanda:", opcoes_demanda)
             
             if selecao:
@@ -1174,6 +1272,9 @@ def pagina_admin():
                 demanda_atual = next((d for d in todas_demandas if d["id"] == demanda_id), None)
                 
                 if demanda_atual:
+                    st.caption(f"📅 Criado em: {demanda_atual.get('data_criacao_formatada', 'N/A')}")
+                    st.caption(f"🔄 Última atualização: {demanda_atual.get('data_atualizacao_formatada', 'N/A')}")
+                    
                     departamentos_lista = [
                         "TI", "RH", "Financeiro", "Comercial", "Operações",
                         "Marketing", "Suporte", "Vendas", "Desenvolvimento", "Outro"
@@ -1281,6 +1382,9 @@ def pagina_admin():
                 try:
                     with get_db_connection() as conn:
                         with conn.cursor() as cur:
+                            # Configurar timezone para Fortaleza
+                            cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                            
                             cur.execute("""
                                 SELECT DATE(data_criacao) as data, COUNT(*) as quantidade
                                 FROM demandas
@@ -1316,7 +1420,7 @@ def pagina_admin():
         with st.expander("🔧 Configurações do Banco de Dados"):
             cfg = get_db_config()
             st.code(
-                "Host: {h}\nDatabase: {d}\nUser: {u}\nPort: {p}\nSSL: {s}".format(
+                "Host: {h}\nDatabase: {d}\nUser: {u}\nPort: {p}\nSSL: {s}\nTimezone: America/Fortaleza".format(
                     h=cfg.get("host", "N/A"),
                     d=cfg.get("database", "N/A"),
                     u=cfg.get("user", "N/A"),
@@ -1337,6 +1441,9 @@ def pagina_admin():
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
+                        # Configurar timezone para Fortaleza
+                        cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                        
                         # Demandas
                         cur.execute("""
                             SELECT
@@ -1361,8 +1468,12 @@ def pagina_admin():
                     col1, col2 = st.columns(2)
                     with col1:
                         st.metric("Total de Demandas", info_demandas[0])
-                        st.caption(f"Primeira demanda: {info_demandas[1].strftime('%d/%m/%Y') if info_demandas[1] else 'N/A'}")
-                        st.caption(f"Última demanda: {info_demandas[2].strftime('%d/%m/%Y %H:%M') if info_demandas[2] else 'N/A'}")
+                        if info_demandas[1]:
+                            primeira_fortaleza = converter_para_fortaleza(info_demandas[1])
+                            st.caption(f"Primeira demanda: {primeira_fortaleza.strftime('%d/%m/%Y %H:%M')}")
+                        if info_demandas[2]:
+                            ultima_fortaleza = converter_para_fortaleza(info_demandas[2])
+                            st.caption(f"Última demanda: {ultima_fortaleza.strftime('%d/%m/%Y %H:%M')}")
                     
                     with col2:
                         st.metric("Usuários Ativos", info_usuarios[1])
@@ -1434,6 +1545,7 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
             st.sidebar.text(f"Database: {cfg.get('database')}")
             st.sidebar.text(f"User: {cfg.get('user')}")
             st.sidebar.text(f"Port: {cfg.get('port')}")
+            st.sidebar.text(f"Timezone: America/Fortaleza")
     else:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
     
