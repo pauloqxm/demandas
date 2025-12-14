@@ -532,13 +532,13 @@ elif menu_selecionado == "📝 Nova Demanda":
             solicitante = st.text_input("👤 Nome do Solicitante*")
             departamento = st.selectbox(
                 "🏢 Departamento*",
-                ["TI", "RH", "Financeiro", "Comercial", "Operações",
-                 "Marketing", "Suporte", "Vendas", "Desenvolvimento", "Outro"]
+                ["Administrativo", "Gestão", "Operação", "Açudes", "EB",
+                 "Outro"]
             )
             categoria = st.selectbox(
                 "📂 Categoria",
-                ["Geral", "Hardware", "Software", "Infraestrutura", "Suporte",
-                 "Treinamento", "Documentação", "Outro"]
+                ["Combustível", "Materiais", "Equipamentos", "Ferramentas", "Alimentos",
+                 "Lubrificantes", "Outro"]
             )
 
         with col2:
