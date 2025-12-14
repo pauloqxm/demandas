@@ -226,7 +226,6 @@ def verificar_e_atualizar_tabela_demandas():
                 """)
                 existentes = {r[0] for r in cur.fetchall()}
 
-                # novas colunas que seu app usa
                 alters = []
                 if "local" not in existentes:
                     alters.append("ADD COLUMN local VARCHAR(100) DEFAULT 'Gerência'")
@@ -241,7 +240,6 @@ def verificar_e_atualizar_tabela_demandas():
                     except Exception as e:
                         st.warning(f"Aviso alterando demandas: {str(e)}")
 
-                # índice e unique para codigo
                 try:
                     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_demandas_codigo ON demandas(codigo)")
                 except Exception:
@@ -263,7 +261,6 @@ def init_database():
             with conn.cursor() as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
 
-                # cria demandas caso não exista (já com codigo)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS demandas (
                         id SERIAL PRIMARY KEY,
@@ -296,7 +293,6 @@ def init_database():
                     )
                 """)
 
-                # migrações
                 ok_d, msg_d = verificar_e_atualizar_tabela_demandas()
                 if not ok_d:
                     conn.rollback()
@@ -307,19 +303,14 @@ def init_database():
                     conn.rollback()
                     return False, msg_u
 
-                # índices úteis
                 try:
                     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_demandas_codigo ON demandas(codigo)")
-                except Exception:
-                    pass
-                try:
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_status ON demandas(status)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_prioridade ON demandas(prioridade)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_data_criacao ON demandas(data_criacao DESC)")
                 except Exception:
                     pass
 
-                # usuário admin padrão
                 cur.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'admin'")
                 if cur.fetchone()[0] == 0:
                     admin_hash = hash_password("admin123")
@@ -436,7 +427,6 @@ def desativar_usuario(usuario_id):
     try:
         if usuario_id == 1:
             return False, "Não dá pra desativar o admin principal."
-
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
@@ -460,14 +450,10 @@ def gerar_codigo_demanda(cur) -> str:
     return f"{prefixo}-{(max_seq + 1):02d}"
 
 def normalizar_busca_codigo(texto: str) -> str:
-    """
-    Aceita '141225-01', '14122501', '14/12/25-01' e tenta deixar '141225-01'
-    """
     if not texto:
         return ""
     s = str(texto).strip()
     s = s.replace("/", "").replace(" ", "").replace(".", "").replace("_", "")
-    # se veio 14122501 vira 141225-01
     if len(s) == 8 and s.isdigit():
         return f"{s[:6]}-{s[6:]}"
     return s
@@ -527,19 +513,7 @@ def carregar_demandas(filtros=None):
                         query += " AND codigo = %s"
                         params.append(codigo)
 
-                query += " ORDER BY "
-
-                if filtros and filtros.get("sort_by") == "prioridade":
-                    query += """
-                        CASE prioridade
-                            WHEN 'Urgente' THEN 1
-                            WHEN 'Alta' THEN 2
-                            WHEN 'Média' THEN 3
-                            ELSE 4
-                        END,
-                    """
-
-                query += " data_criacao DESC"
+                query += " ORDER BY data_criacao DESC"
 
                 cur.execute(query, params)
                 demandas = cur.fetchall()
@@ -551,6 +525,25 @@ def carregar_demandas(filtros=None):
                 return demandas
     except Exception as e:
         st.error(f"Erro ao carregar demandas: {str(e)}")
+        return []
+
+def carregar_historico_demanda(demanda_id: int):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SET TIME ZONE 'America/Fortaleza'")
+                cur.execute("""
+                    SELECT id, usuario, acao, detalhes, data_acao
+                    FROM historico_demandas
+                    WHERE demanda_id = %s
+                    ORDER BY data_acao DESC
+                """, (demanda_id,))
+                rows = cur.fetchall()
+                for r in rows:
+                    r["data_acao_formatada"] = formatar_data_hora_fortaleza(r.get("data_acao"))
+                return rows
+    except Exception as e:
+        st.warning(f"Não foi possível carregar histórico: {str(e)}")
         return []
 
 def adicionar_demanda(dados):
@@ -730,6 +723,63 @@ def obter_estatisticas():
         return {}
 
 # =============================
+# UI helper: cards clicáveis
+# =============================
+def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
+    st.subheader(titulo)
+    st.caption("Clique em cada item para abrir os detalhes e o histórico.")
+    if not demandas:
+        st.info("Nada encontrado.")
+        return
+
+    for d in demandas:
+        codigo = d.get("codigo") or "SEM-COD"
+        status = d.get("status") or ""
+        prioridade = d.get("prioridade") or ""
+        solicitante = d.get("solicitante") or ""
+        item = (d.get("item") or "").strip()
+        item_curto = item if len(item) <= 90 else item[:90] + "..."
+
+        header = f"📌 {codigo}  |  {status}  |  {prioridade}  |  {solicitante}  |  {item_curto}"
+
+        with st.expander(header, expanded=False):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Código", codigo)
+            c2.metric("Status", status)
+            c3.metric("Prioridade", prioridade)
+            c4.metric("Qtd", int(d.get("quantidade") or 0))
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.write(f"**Departamento**\n\n{d.get('departamento','')}")
+            c2.write(f"**Local**\n\n{d.get('local','')}")
+            c3.write(f"**Categoria**\n\n{d.get('categoria','')}")
+            c4.write(f"**Unidade**\n\n{d.get('unidade','')}")
+
+            st.write("**Descrição completa**")
+            st.write(d.get("item") or "")
+
+            st.write("**Observações**")
+            st.write(d.get("observacoes") or "Sem observações.")
+
+            st.write("**Datas**")
+            st.write(f"Criado em {d.get('data_criacao_formatada','')}")
+            st.write(f"Atualizado em {d.get('data_atualizacao_formatada','')}")
+
+            st.markdown("---")
+            st.write("**Histórico**")
+            hist = carregar_historico_demanda(int(d["id"]))
+            if not hist:
+                st.info("Sem histórico registrado ainda.")
+            else:
+                for h in hist:
+                    linha = f"{h.get('data_acao_formatada','')}  |  {h.get('acao','')}  |  {h.get('usuario','')}"
+                    st.write(linha)
+                    detalhes = h.get("detalhes")
+                    if detalhes:
+                        with st.expander("Ver detalhes", expanded=False):
+                            st.json(detalhes)
+
+# =============================
 # Páginas
 # =============================
 def pagina_inicial():
@@ -741,9 +791,7 @@ def pagina_inicial():
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("📝 Solicitação e Consulta")
-        st.markdown(
-            "Envie uma nova demanda e também consulte depois usando seu nome ou o código da demanda."
-        )
+        st.markdown("Envie uma nova demanda e consulte depois usando nome ou código.")
         if st.button("📄 Acessar Solicitação", type="primary", use_container_width=True):
             st.session_state.pagina_atual = "solicitacao"
             st.rerun()
@@ -768,7 +816,7 @@ def pagina_solicitacao():
     if "ultima_demanda_codigo" not in st.session_state:
         st.session_state.ultima_demanda_codigo = None
 
-    # CONSULTA DO USUÁRIO
+    # CONSULTA DO USUÁRIO com detalhes clicáveis
     with st.expander("🔎 Consultar demanda por Nome ou Código", expanded=True):
         colc1, colc2 = st.columns(2)
         with colc1:
@@ -789,15 +837,7 @@ def pagina_solicitacao():
                 st.warning("Digite o nome do solicitante ou o código.")
             else:
                 resultados = carregar_demandas(filtros)
-                if resultados:
-                    df = pd.DataFrame(resultados)
-                    # mostra primeiro o código, que é o público
-                    cols = ["codigo", "status", "prioridade", "departamento", "local", "categoria", "unidade",
-                            "quantidade", "item", "data_criacao_formatada", "data_atualizacao_formatada"]
-                    cols = [c for c in cols if c in df.columns]
-                    st.dataframe(df[cols], use_container_width=True, hide_index=True)
-                else:
-                    st.info("Nada encontrado com esses dados.")
+                render_resultados_com_detalhes(resultados, "📌 Demandas encontradas")
 
     st.markdown("---")
 
@@ -942,8 +982,11 @@ def pagina_gerenciar_usuarios():
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            novo_nivel = st.selectbox("Nível", ["usuario", "supervisor", "administrador"],
-                                      index=["usuario", "supervisor", "administrador"].index(info["nivel_acesso"]))
+            novo_nivel = st.selectbox(
+                "Nível",
+                ["usuario", "supervisor", "administrador"],
+                index=["usuario", "supervisor", "administrador"].index(info["nivel_acesso"])
+            )
             if st.button("💾 Salvar nível"):
                 ok, msg = atualizar_usuario(usuario_id, {"nivel_acesso": novo_nivel, "is_admin": (novo_nivel == "administrador")})
                 st.success(msg) if ok else st.error(msg)
@@ -1021,10 +1064,16 @@ def pagina_admin():
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔎 Filtros")
-    status_filtro = st.sidebar.multiselect("Status", ["Pendente", "Em andamento", "Concluída", "Cancelada"],
-                                          default=["Pendente", "Em andamento", "Concluída", "Cancelada"])
-    prioridade_filtro = st.sidebar.multiselect("Prioridade", ["Urgente", "Alta", "Média", "Baixa"],
-                                              default=["Urgente", "Alta", "Média", "Baixa"])
+    status_filtro = st.sidebar.multiselect(
+        "Status",
+        ["Pendente", "Em andamento", "Concluída", "Cancelada"],
+        default=["Pendente", "Em andamento", "Concluída", "Cancelada"]
+    )
+    prioridade_filtro = st.sidebar.multiselect(
+        "Prioridade",
+        ["Urgente", "Alta", "Média", "Baixa"],
+        default=["Urgente", "Alta", "Média", "Baixa"]
+    )
 
     st.sidebar.markdown("---")
     if st.sidebar.button("🚪 Logout"):
@@ -1055,25 +1104,9 @@ def pagina_admin():
         c3.metric("Urgentes", totais.get("urgentes", 0))
         c4.metric("Total itens", totais.get("total_itens", 0))
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if est.get("por_departamento"):
-                df = pd.DataFrame(list(est["por_departamento"].items()), columns=["Departamento", "Qtd"])
-                st.bar_chart(df.set_index("Departamento"))
-        with col2:
-            if est.get("por_prioridade"):
-                df = pd.DataFrame(list(est["por_prioridade"].items()), columns=["Prioridade", "Qtd"])
-                st.bar_chart(df.set_index("Prioridade"))
-
         st.subheader("📋 Últimas")
         rec = carregar_demandas(filtros)[:10]
-        if rec:
-            df = pd.DataFrame(rec)
-            cols = ["codigo", "status", "prioridade", "departamento", "local", "solicitante", "item", "data_criacao_formatada"]
-            cols = [c for c in cols if c in df.columns]
-            st.dataframe(df[cols], use_container_width=True, hide_index=True)
-        else:
-            st.info("Nada com esses filtros.")
+        render_resultados_com_detalhes(rec, "Últimas demandas")
 
     elif menu_sel == "📋 Todas as Demandas":
         st.header("📋 Todas as Demandas")
@@ -1082,21 +1115,7 @@ def pagina_admin():
             filtros["search"] = busca.strip()
 
         dados = carregar_demandas(filtros)
-        if not dados:
-            st.info("Nada encontrado.")
-            return
-
-        df = pd.DataFrame(dados)
-        st.info(f"Encontradas {len(df)} demandas")
-
-        if usuario_nivel in ["supervisor", "administrador"]:
-            if st.button("📥 Exportar CSV"):
-                csv = df.to_csv(index=False)
-                st.download_button("Baixar CSV", data=csv,
-                                   file_name=f"demandas_{agora.strftime('%Y%m%d_%H%M%S')}.csv",
-                                   mime="text/csv")
-
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        render_resultados_com_detalhes(dados, "Todas as demandas")
 
     elif menu_sel == "✏️ Editar Demanda":
         if usuario_nivel not in ["supervisor", "administrador"]:
@@ -1128,7 +1147,6 @@ def pagina_admin():
         status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
         prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
 
-               # índices seguros
         dep_index = departamentos_lista.index(atual["departamento"]) if atual["departamento"] in departamentos_lista else len(departamentos_lista) - 1
         loc_index = locais_lista.index(atual.get("local", "Gerência")) if atual.get("local", "Gerência") in locais_lista else 0
         uni_index = unidades_lista.index(atual.get("unidade", "Unid.")) if atual.get("unidade", "Unid.") in unidades_lista else 2
@@ -1202,25 +1220,7 @@ def pagina_admin():
                 df = pd.DataFrame(list(est["por_status"].items()), columns=["Status", "Qtd"])
                 st.bar_chart(df.set_index("Status"))
         with col2:
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SET TIME ZONE 'America/Fortaleza'")
-                        cur.execute("""
-                            SELECT DATE(data_criacao) as data, COUNT(*) as quantidade
-                            FROM demandas
-                            WHERE data_criacao >= CURRENT_DATE - INTERVAL '7 days'
-                            GROUP BY DATE(data_criacao)
-                            ORDER BY data
-                        """)
-                        dados = cur.fetchall()
-                if dados:
-                    df = pd.DataFrame(dados, columns=["Data", "Quantidade"])
-                    st.line_chart(df.set_index("Data"))
-                else:
-                    st.info("Sem dados nos últimos 7 dias.")
-            except Exception:
-                st.info("Falha ao carregar série temporal.")
+            st.info("Se quiser, eu coloco a série temporal aqui também como card e gráfico.")
 
     elif menu_sel == "⚙️ Configurações":
         st.header("⚙️ Configurações")
@@ -1291,4 +1291,4 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
     else:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas v2.1")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas v2.2")
