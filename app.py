@@ -23,7 +23,7 @@ st.set_page_config(
 # ============================================
 
 DATABASE_URL = (
-    os.environ.get("DATABASE_URL_PUBLIC")
+    os.environ.get("DATABASE_PUBLIC_URL")
     or os.environ.get("DATABASE_URL")
 )
 
