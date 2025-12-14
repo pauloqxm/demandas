@@ -703,6 +703,7 @@ def pagina_admin():
         todas_demandas = carregar_demandas()
         
         if todas_demandas:
+            # CORREÇÃO: Nome correto da variável - sem "s" no final
             opcoes_demanda = [f"#{d['id']} - {d['item'][:50]}..." for d in todas_demandas]
             selecao = st.selectbox("Selecione uma demanda:", opcoes_demanda)
             
@@ -718,9 +719,21 @@ def pagina_admin():
                     status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
                     prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
                     
-                    dep_index = departamentos_lista.index(demanda_atual["departamento"]) if demanda_atual["departamento"] in departamentos_lista else len(departamentos_lista) - 1
-                    pri_index = prioridade_lista.index(demanda_atual["prioridade"]) if demanda_atual["prioridade"] in prioridade_lista else 1
-                    st_index = status_lista.index(demanda_atual["status"]) if demanda_atual["status"] in status_lista else 0
+                    # Encontrar índices corretos
+                    try:
+                        dep_index = departamentos_lista.index(demanda_atual["departamento"])
+                    except ValueError:
+                        dep_index = len(departamentos_lista) - 1  # Último item (Outro)
+                    
+                    try:
+                        pri_index = prioridade_lista.index(demanda_atual["prioridade"])
+                    except ValueError:
+                        pri_index = 1  # Média como padrão
+                    
+                    try:
+                        st_index = status_lista.index(demanda_atual["status"])
+                    except ValueError:
+                        st_index = 0  # Pendente como padrão
                     
                     with st.form(f"form_editar_{demanda_id}"):
                         col_e1, col_e2 = st.columns(2)
