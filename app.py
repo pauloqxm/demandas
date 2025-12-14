@@ -704,7 +704,7 @@ def pagina_admin():
         
         if todas_demandas:
             opcoes_demanda = [f"#{d['id']} - {d['item'][:50]}..." for d in todas_demandas]
-            selecao = st.selectbox("Selecione uma demanda:", opcoes_demandas)
+            selecao = st.selectbox("Selecione uma demanda:", opcoes_demanda)
             
             if selecao:
                 demanda_id = int(selecao.split("#")[1].split(" - ")[0])
