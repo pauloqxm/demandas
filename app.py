@@ -104,6 +104,88 @@ def test_db_connection():
     except Exception as e:
         return False, f"❌ Falha na conexão: {str(e)}"
 
+def verificar_e_atualizar_tabela_usuarios():
+    """Verifica e atualiza a estrutura da tabela usuarios se necessário"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Verificar se a tabela usuarios existe
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'usuarios'
+                    );
+                """)
+                tabela_existe = cur.fetchone()[0]
+                
+                if not tabela_existe:
+                    # Criar tabela nova
+                    cur.execute("""
+                        CREATE TABLE usuarios (
+                            id SERIAL PRIMARY KEY,
+                            nome VARCHAR(200) NOT NULL,
+                            email VARCHAR(200) UNIQUE NOT NULL,
+                            username VARCHAR(100) UNIQUE NOT NULL,
+                            senha_hash VARCHAR(255) NOT NULL,
+                            departamento VARCHAR(100),
+                            nivel_acesso VARCHAR(50) DEFAULT 'usuario',
+                            is_admin BOOLEAN DEFAULT FALSE,
+                            ativo BOOLEAN DEFAULT TRUE,
+                            data_cadastro TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            ultimo_login TIMESTAMP WITH TIME ZONE,
+                            UNIQUE(username, email)
+                        )
+                    """)
+                    conn.commit()
+                    return True, "Tabela usuarios criada com sucesso!"
+                
+                # Verificar colunas existentes
+                cur.execute("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'usuarios'
+                """)
+                colunas = cur.fetchall()
+                colunas_existentes = [col[0] for col in colunas]
+                
+                # Lista de colunas necessárias
+                colunas_necessarias = [
+                    ('username', 'VARCHAR(100)', 'ADD COLUMN username VARCHAR(100) UNIQUE'),
+                    ('senha_hash', 'VARCHAR(255)', 'ADD COLUMN senha_hash VARCHAR(255) NOT NULL DEFAULT \'\''),
+                    ('nivel_acesso', 'VARCHAR(50)', 'ADD COLUMN nivel_acesso VARCHAR(50) DEFAULT \'usuario\''),
+                    ('ativo', 'BOOLEAN', 'ADD COLUMN ativo BOOLEAN DEFAULT TRUE'),
+                    ('ultimo_login', 'TIMESTAMP WITH TIME ZONE', 'ADD COLUMN ultimo_login TIMESTAMP WITH TIME ZONE')
+                ]
+                
+                alteracoes = []
+                for coluna, tipo, sql in colunas_necessarias:
+                    if coluna not in colunas_existentes:
+                        alteracoes.append(sql)
+                
+                # Executar alterações se necessário
+                if alteracoes:
+                    for alteracao in alteracoes:
+                        try:
+                            cur.execute(f"ALTER TABLE usuarios {alteracao}")
+                        except Exception as e:
+                            st.warning(f"Aviso ao adicionar coluna: {str(e)}")
+                    
+                    # Se username foi adicionado, precisamos preencher com valores padrão
+                    if 'username' not in colunas_existentes:
+                        cur.execute("""
+                            UPDATE usuarios 
+                            SET username = LOWER(REPLACE(nome, ' ', '_')) || '_' || id::text
+                            WHERE username IS NULL OR username = ''
+                        """)
+                    
+                    conn.commit()
+                    return True, f"Tabela usuarios atualizada! Colunas adicionadas: {len(alteracoes)}"
+                
+                return True, "Tabela usuarios já está atualizada!"
+                
+    except Exception as e:
+        return False, f"Erro ao verificar/atualizar tabela usuarios: {str(e)}"
+
 def init_database():
     """Inicializa o banco de dados no Railway"""
     try:
@@ -140,49 +222,30 @@ def init_database():
                     )
                 """)
 
-                # Tabela de usuários (ATUALIZADA)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS usuarios (
-                        id SERIAL PRIMARY KEY,
-                        nome VARCHAR(200) NOT NULL,
-                        email VARCHAR(200) UNIQUE NOT NULL,
-                        username VARCHAR(100) UNIQUE NOT NULL,
-                        senha_hash VARCHAR(255) NOT NULL,
-                        departamento VARCHAR(100),
-                        nivel_acesso VARCHAR(50) DEFAULT 'usuario',
-                        is_admin BOOLEAN DEFAULT FALSE,
-                        ativo BOOLEAN DEFAULT TRUE,
-                        data_cadastro TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        ultimo_login TIMESTAMP WITH TIME ZONE,
-                        UNIQUE(username, email)
-                    )
-                """)
+                conn.commit()
 
-                # Índices
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_status ON demandas(status)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_departamento ON demandas(departamento)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_prioridade ON demandas(prioridade)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_demandas_data_criacao ON demandas(data_criacao DESC)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_historico_demanda_id ON historico_demandas(demanda_id)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios(username)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_nivel_acesso ON usuarios(nivel_acesso)")
+                # Verificar e atualizar tabela de usuários
+                sucesso, mensagem = verificar_e_atualizar_tabela_usuarios()
+                if not sucesso:
+                    return False, mensagem
 
                 # Criar usuário admin padrão se não existir
                 cur.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'admin'")
                 if cur.fetchone()[0] == 0:
                     admin_hash = hash_password("admin123")
                     cur.execute("""
-                        INSERT INTO usuarios (nome, email, username, senha_hash, nivel_acesso, is_admin)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO usuarios (nome, email, username, senha_hash, nivel_acesso, is_admin, ativo)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """, (
                         "Administrador Principal",
                         "admin@sistema.com",
                         "admin",
                         admin_hash,
                         "administrador",
+                        True,
                         True
                     ))
-                    st.success("✅ Usuário admin padrão criado (senha: admin123)")
+                    st.success("✅ Usuário admin padrão criado (username: admin, senha: admin123)")
 
                 conn.commit()
 
@@ -241,8 +304,8 @@ def criar_usuario(dados_usuario):
                 
                 cur.execute("""
                     INSERT INTO usuarios 
-                    (nome, email, username, senha_hash, departamento, nivel_acesso, is_admin)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (nome, email, username, senha_hash, departamento, nivel_acesso, is_admin, ativo)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     dados_usuario["nome"],
@@ -251,7 +314,8 @@ def criar_usuario(dados_usuario):
                     senha_hash,
                     dados_usuario.get("departamento", ""),
                     dados_usuario.get("nivel_acesso", "usuario"),
-                    dados_usuario.get("is_admin", False)
+                    dados_usuario.get("is_admin", False),
+                    True
                 ))
                 
                 conn.commit()
