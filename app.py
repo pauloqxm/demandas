@@ -22,7 +22,10 @@ st.set_page_config(
 # CONFIGURAÇÃO DA CONEXÃO COM RAILWAY POSTGRES
 # ============================================
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = (
+    os.environ.get("DATABASE_URL_PUBLIC")
+    or os.environ.get("DATABASE_URL")
+)
 
 def _safe_st_secrets_get(key: str, default=None):
     """
