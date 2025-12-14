@@ -432,6 +432,32 @@ def pagina_solicitacao():
     """Página de solicitação para usuários comuns"""
     st.header("📝 Nova Solicitação")
     
+    # Usar uma variável de sessão para controlar se o formulário foi enviado
+    if "solicitacao_enviada" not in st.session_state:
+        st.session_state.solicitacao_enviada = False
+    if "ultima_demanda_id" not in st.session_state:
+        st.session_state.ultima_demanda_id = None
+    
+    # Se uma solicitação foi enviada, mostrar confirmação
+    if st.session_state.solicitacao_enviada:
+        st.success(f"✅ Solicitação **#{st.session_state.ultima_demanda_id}** enviada com sucesso!")
+        st.balloons()
+        
+        # Opções após envio
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📝 Enviar Nova Solicitação", use_container_width=True):
+                st.session_state.solicitacao_enviada = False
+                st.rerun()
+        with col2:
+            if st.button("🏠 Voltar ao Início", use_container_width=True):
+                st.session_state.pagina_atual = "inicio"
+                st.session_state.solicitacao_enviada = False
+                st.rerun()
+        
+        return
+    
+    # Formulário de solicitação
     with st.form("form_nova_demanda", clear_on_submit=True):
         col1, col2 = st.columns(2)
 
@@ -480,27 +506,19 @@ def pagina_solicitacao():
                 demanda_id = adicionar_demanda(nova_demanda)
 
                 if demanda_id:
-                    st.success(f"✅ Solicitação **#{demanda_id}** enviada com sucesso!")
-                    st.balloons()
-                    with st.expander("📋 Ver Resumo da Solicitação"):
-                        st.json(nova_demanda)
-                    
-                    # Botão para nova solicitação
-                    if st.button("📝 Enviar Nova Solicitação"):
-                        st.rerun()
-                        
-                    # Botão para voltar ao início
-                    if st.button("🏠 Voltar ao Início"):
-                        st.session_state.pagina_atual = "inicio"
-                        st.rerun()
+                    # Salvar estado da sessão
+                    st.session_state.solicitacao_enviada = True
+                    st.session_state.ultima_demanda_id = demanda_id
+                    st.rerun()
                 else:
                     st.error("❌ Erro ao salvar a solicitação.")
             else:
                 st.error("⚠️ Por favor, preencha todos os campos obrigatórios (*)")
     
-    # Botão para voltar ao início (fora do formulário)
+    # Botão para voltar ao início
     if st.button("← Voltar ao Início", key="voltar_solicitacao"):
         st.session_state.pagina_atual = "inicio"
+        st.session_state.solicitacao_enviada = False
         st.rerun()
 
 def pagina_login_admin():
@@ -864,6 +882,12 @@ if "admin_autenticado" not in st.session_state:
 
 if "filtros" not in st.session_state:
     st.session_state.filtros = {}
+
+# Inicializar variáveis de sessão para página de solicitação
+if "solicitacao_enviada" not in st.session_state:
+    st.session_state.solicitacao_enviada = False
+if "ultima_demanda_id" not in st.session_state:
+    st.session_state.ultima_demanda_id = None
 
 # Roteamento das páginas
 if st.session_state.pagina_atual == "inicio":
