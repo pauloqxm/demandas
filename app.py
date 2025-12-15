@@ -11,16 +11,12 @@ from urllib.parse import urlparse
 import hashlib
 import pytz
 import time
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.utils import formatdate
 
 # =============================
 # Configuração da página
 # =============================
 st.set_page_config(
-    page_title="GRBANABUIU - Sistema de Demandas",
+    page_title="Sistema de Demandas - GRBANABUIU",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -45,235 +41,6 @@ def formatar_data_hora_fortaleza(dt: datetime, formato: str = "%d/%m/%Y %H:%M") 
     if not dt:
         return ""
     return converter_para_fortaleza(dt).strftime(formato)
-
-# =============================
-# Configurações de E-mail
-# =============================
-def obter_config_email():
-    """Obtém configurações de e-mail das variáveis de ambiente"""
-    return {
-        "smtp_server": os.environ.get("SMTP_SERVER") or _safe_st_secrets_get("SMTP_SERVER", "smtp.gmail.com"),
-        "smtp_port": int(os.environ.get("SMTP_PORT") or _safe_st_secrets_get("SMTP_PORT", 587)),
-        "smtp_user": os.environ.get("SMTP_USER") or _safe_st_secrets_get("SMTP_USER", ""),
-        "smtp_password": os.environ.get("SMTP_PASSWORD") or _safe_st_secrets_get("SMTP_PASSWORD", ""),
-        "from_email": os.environ.get("FROM_EMAIL") or _safe_st_secrets_get("FROM_EMAIL", ""),
-        "admin_emails": (os.environ.get("ADMIN_EMAILS") or _safe_st_secrets_get("ADMIN_EMAILS", "")).split(","),
-        "enviar_emails": os.environ.get("ENVIAR_EMAILS") or _safe_st_secrets_get("ENVIAR_EMAILS", "false").lower() == "true"
-    }
-
-def enviar_email_alerta(demanda: dict):
-    """Envia e-mail de alerta quando uma nova demanda é criada"""
-    
-    config_email = obter_config_email()
-    
-    # Verificar se o envio de e-mails está habilitado
-    if not config_email["enviar_emails"]:
-        st.info("ℹ️ Sistema de e-mails desabilitado. Configure as variáveis de ambiente para ativar.")
-        return True
-    
-    # Verificar se há configurações mínimas
-    if not all([config_email["smtp_user"], config_email["smtp_password"], config_email["from_email"]]):
-        st.warning("⚠️ Configurações de e-mail incompletas. Configure SMTP_USER, SMTP_PASSWORD e FROM_EMAIL.")
-        return False
-    
-    if not config_email["admin_emails"] or not config_email["admin_emails"][0]:
-        st.warning("⚠️ Nenhum e-mail de administrador configurado. Configure ADMIN_EMAILS.")
-        return False
-    
-    try:
-        # Criar mensagem
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"[GRBANABUIU] Nova Demanda: {demanda.get('codigo', 'SEM-CODIGO')}"
-        msg['From'] = config_email["from_email"]
-        msg['To'] = ", ".join(config_email["admin_emails"])
-        msg['Date'] = formatdate(localtime=True)
-        
-        # Formatar dados da demanda
-        status_cor = CORES_STATUS.get(demanda.get("status", "Pendente"), "#FF6B6B")
-        prioridade_cor = CORES_PRIORIDADE.get(demanda.get("prioridade", "Média"), "#FFD166")
-        
-        # Conteúdo HTML do e-mail
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <style>
-                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                         color: white; padding: 20px; border-radius: 10px 10px 0 0; }}
-                .content {{ background: #f9f9f9; padding: 20px; border-left: 5px solid #3498db; }}
-                .card {{ background: white; border-radius: 8px; padding: 15px; margin: 10px 0; 
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-                .badge {{ display: inline-block; padding: 5px 10px; border-radius: 20px; 
-                        font-weight: bold; font-size: 12px; margin-right: 5px; }}
-                .footer {{ margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd; 
-                         font-size: 12px; color: #777; }}
-                .info-row {{ display: flex; justify-content: space-between; padding: 5px 0; 
-                           border-bottom: 1px solid #eee; }}
-                .info-label {{ font-weight: bold; color: #555; }}
-                .info-value {{ color: #333; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h2>🚂 GRBANABUIU - Nova Demanda Recebida</h2>
-                    <p>Sistema de Gestão de Demandas</p>
-                </div>
-                
-                <div class="content">
-                    <div style="text-align: center; margin-bottom: 20px;">
-                        <div class="badge" style="background-color: {status_cor}; color: white;">
-                            {demanda.get('status', 'Pendente')}
-                        </div>
-                        <div class="badge" style="background-color: {prioridade_cor}; color: #333;">
-                            {demanda.get('prioridade', 'Média')}
-                        </div>
-                        <div class="badge" style="background-color: #3498db; color: white;">
-                            {demanda.get('codigo', 'SEM-CODIGO')}
-                        </div>
-                    </div>
-                    
-                    <div class="card">
-                        <h3>📋 Informações da Demanda</h3>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Código:</span>
-                            <span class="info-value"><strong>{demanda.get('codigo', 'N/A')}</strong></span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Solicitante:</span>
-                            <span class="info-value">{demanda.get('solicitante', 'N/A')}</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Departamento:</span>
-                            <span class="info-value">{demanda.get('departamento', 'N/A')}</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Local:</span>
-                            <span class="info-value">{demanda.get('local', 'Gerência')}</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Prioridade:</span>
-                            <span class="info-value">{demanda.get('prioridade', 'Média')}</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Status:</span>
-                            <span class="info-value">{demanda.get('status', 'Pendente')}</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Urgente:</span>
-                            <span class="info-value">{'✅ Sim' if demanda.get('urgencia') else '❌ Não'}</span>
-                        </div>
-                    </div>
-                    
-                    <div class="card">
-                        <h3>📝 Descrição</h3>
-                        <p>{demanda.get('item', 'Sem descrição')}</p>
-                    </div>
-                    
-                    <div class="card">
-                        <h3>📊 Detalhes Técnicos</h3>
-                        <div class="info-row">
-                            <span class="info-label">Quantidade:</span>
-                            <span class="info-value">{demanda.get('quantidade', 0)} {demanda.get('unidade', 'Unid.')}</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Categoria:</span>
-                            <span class="info-value">{demanda.get('categoria', 'Geral')}</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Estimativa:</span>
-                            <span class="info-value">{demanda.get('estimativa_horas', 0) or 0:.1f} horas</span>
-                        </div>
-                        
-                        <div class="info-row">
-                            <span class="info-label">Data/Hora:</span>
-                            <span class="info-value">{demanda.get('data_criacao_formatada', 'N/A')}</span>
-                        </div>
-                    </div>
-                    
-                    {f"""
-                    <div class="card">
-                        <h3>Observações</h3>
-                        <p>{demanda.get('observacoes', 'Sem observações.')}</p>
-                    </div>
-                    """ if demanda.get('observacoes') else ''}
-                    
-                    <div class="card" style="background-color: #e8f4fc; border-left: 5px solid #3498db;">
-                        <h3>🔗 Ações Rápidas</h3>
-                        <p>• Acesse o sistema para ver detalhes completos</p>
-                        <p>• Atualize o status conforme andamento</p>
-                        <p>• Entre em contato com o solicitante se necessário</p>
-                    </div>
-                </div>
-                
-                <div class="footer">
-                    <p>Este é um e-mail automático do Sistema GRBANABUIU.</p>
-                    <p>© {datetime.now().year} - Sistema de Demandas. Não responda este e-mail.</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        
-        # Conteúdo texto simples (fallback)
-        texto = f"""
-        NOVA DEMANDA - GRBANABUIU
-        ===========================
-        
-        Código: {demanda.get('codigo', 'N/A')}
-        Solicitante: {demanda.get('solicitante', 'N/A')}
-        Departamento: {demanda.get('departamento', 'N/A')}
-        Local: {demanda.get('local', 'Gerência')}
-        Prioridade: {demanda.get('prioridade', 'Média')}
-        Status: {demanda.get('status', 'Pendente')}
-        Urgente: {'Sim' if demanda.get('urgencia') else 'Não'}
-        
-        Descrição:
-        {demanda.get('item', 'Sem descrição')}
-        
-        Detalhes:
-        - Quantidade: {demanda.get('quantidade', 0)} {demanda.get('unidade', 'Unid.')}
-        - Categoria: {demanda.get('categoria', 'Geral')}
-        - Estimativa: {demanda.get('estimativa_horas', 0) or 0:.1f} horas
-        - Data/Hora: {demanda.get('data_criacao_formatada', 'N/A')}
-        
-        Observações:
-        {demanda.get('observacoes', 'Sem observações.')}
-        
-        ---
-        E-mail automático - Sistema GRBANABUIU
-        """
-        
-        # Anexar partes
-        part1 = MIMEText(texto, 'plain')
-        part2 = MIMEText(html, 'html')
-        msg.attach(part1)
-        msg.attach(part2)
-        
-        # Enviar e-mail
-        with smtplib.SMTP(config_email["smtp_server"], config_email["smtp_port"]) as server:
-            server.starttls()
-            server.login(config_email["smtp_user"], config_email["smtp_password"])
-            server.send_message(msg)
-        
-        st.success(f"📧 E-mail de alerta enviado para {len(config_email['admin_emails'])} destinatário(s)")
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Erro ao enviar e-mail: {str(e)}")
-        return False
 
 # =============================
 # Cores para status
@@ -710,7 +477,7 @@ def normalizar_busca_codigo(texto: str) -> str:
     return s
 
 # =============================
-# Demandas (com envio de e-mail)
+# Demandas
 # =============================
 def carregar_demandas(filtros=None):
     try:
@@ -834,39 +601,6 @@ def adicionar_demanda(dados):
                         """, (nova_id, dados["solicitante"], "CRIAÇÃO", dumps_safe(dados)))
 
                         conn.commit()
-                        
-                        # Buscar a demanda recém-criada para enviar e-mail
-                        cur.execute("""
-                            SELECT d.*,
-                                TO_CHAR(d.data_criacao AT TIME ZONE 'America/Fortaleza', 'DD/MM/YYYY HH24:MI') as data_criacao_formatada
-                            FROM demandas d
-                            WHERE d.id = %s
-                        """, (nova_id,))
-                        demanda_criada = cur.fetchone()
-                        
-                        # Enviar e-mail de alerta
-                        if demanda_criada:
-                            # Adicionar formatação para e-mail
-                            demanda_email = {
-                                "codigo": codigo_ok,
-                                "item": dados["item"],
-                                "quantidade": dados["quantidade"],
-                                "solicitante": dados["solicitante"],
-                                "departamento": dados["departamento"],
-                                "local": dados.get("local", "Gerência"),
-                                "prioridade": dados["prioridade"],
-                                "status": "Pendente",
-                                "observacoes": dados.get("observacoes", ""),
-                                "categoria": dados.get("categoria", "Geral"),
-                                "unidade": dados.get("unidade", "Unid."),
-                                "urgencia": bool(dados.get("urgencia", False)),
-                                "estimativa_horas": dados.get("estimativa_horas"),
-                                "data_criacao_formatada": demanda_criada["data_criacao_formatada"]
-                            }
-                            
-                            # Enviar e-mail em segundo plano
-                            enviar_email_alerta(demanda_email)
-                        
                         return {"id": nova_id, "codigo": codigo_ok}
                     except psycopg2.errors.UniqueViolation:
                         conn.rollback()
@@ -1073,13 +807,13 @@ def render_comprovante_demanda(d: dict):
             
             # Grid de informações em formato de extrato
             info_grid = [
-                ("**Solicitante**", d.get("solicitante", "")),
-                ("**Departamento**", d.get("departamento", "")),
-                ("**Local**", d.get("local", "Gerência")),
-                ("**Categoria**", d.get("categoria", "Geral")),
-                ("**Quantidade**", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
-                ("**Estimativa**", f"{d.get('estimativa_horas', 0) or 0:.1f} horas" if d.get("estimativa_horas") else "Não informada"),
-                ("**Urgente**", "✅ Sim" if d.get("urgencia") else "❌ Não"),
+                ("Solicitante:", d.get("solicitante", "")),
+                ("Departamento:", d.get("departamento", "")),
+                ("Local:", d.get("local", "Gerência")),
+                ("Categoria:", d.get("categoria", "Geral")),
+                ("Quantidade:", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
+                ("Estimativa:", f"{d.get('estimativa_horas', 0) or 0:.1f} horas" if d.get("estimativa_horas") else "Não informada"),
+                ("Urgente:", "✅ Sim" if d.get("urgencia") else "❌ Não"),
             ]
             
             for label, value in info_grid:
@@ -1230,126 +964,6 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
             render_comprovante_demanda(d)
 
 # =============================
-# Página de Configuração de E-mail
-# =============================
-def pagina_config_email():
-    """Página para configurar alertas por e-mail"""
-    st.header("📧 Configuração de Alertas por E-mail")
-    
-    config_email = obter_config_email()
-    
-    st.markdown("""
-    ### ⚙️ Configurações SMTP
-    
-    Configure as informações do servidor de e-mail para receber alertas 
-    automáticos quando novas demandas forem criadas.
-    """)
-    
-    with st.form("form_config_email"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            smtp_server = st.text_input(
-                "SMTP Server",
-                value=config_email["smtp_server"],
-                help="Ex: smtp.gmail.com, smtp.office365.com"
-            )
-            smtp_port = st.number_input(
-                "SMTP Port",
-                min_value=1,
-                max_value=65535,
-                value=config_email["smtp_port"],
-                help="Geralmente 587 para TLS ou 465 para SSL"
-            )
-            smtp_user = st.text_input(
-                "SMTP Username",
-                value=config_email["smtp_user"],
-                help="Seu e-mail de envio"
-            )
-        
-        with col2:
-            smtp_password = st.text_input(
-                "SMTP Password",
-                value=config_email["smtp_password"],
-                type="password",
-                help="Senha do e-mail ou senha de app"
-            )
-            from_email = st.text_input(
-                "From E-mail",
-                value=config_email["from_email"],
-                help="E-mail que aparecerá como remetente"
-            )
-            admin_emails = st.text_area(
-                "E-mails dos Administradores",
-                value=", ".join(config_email["admin_emails"]) if config_email["admin_emails"] else "",
-                help="Lista de e-mails separados por vírgula"
-            )
-        
-        enviar_emails = st.checkbox(
-            "Habilitar envio de e-mails",
-            value=config_email["enviar_emails"],
-            help="Ativar/desativar sistema de alertas por e-mail"
-        )
-        
-        salvar = st.form_submit_button("💾 Salvar Configurações", type="primary")
-        
-        if salvar:
-            # Validar e-mails
-            emails_lista = [e.strip() for e in admin_emails.split(",") if e.strip()]
-            
-            if not emails_lista:
-                st.error("⚠️ Informe pelo menos um e-mail de administrador.")
-            elif not all(["@" in e for e in emails_lista]):
-                st.error("⚠️ Alguns e-mails parecem inválidos.")
-            else:
-                # Aqui você salvaria as configurações em um banco de dados ou variáveis de ambiente
-                st.success("✅ Configurações de e-mail salvas com sucesso!")
-                st.info("💡 Em produção, estas configurações devem ser salvas em variáveis de ambiente.")
-    
-    st.markdown("---")
-    st.subheader("📋 Teste de Configuração")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("✉️ Testar Envio de E-mail", use_container_width=True):
-            # Criar uma demanda de teste para enviar e-mail
-            demanda_teste = {
-                "codigo": "TESTE-01",
-                "item": "Este é um e-mail de teste do sistema GRBANABUIU",
-                "quantidade": 1,
-                "solicitante": "Sistema de Teste",
-                "departamento": "TI",
-                "local": "Gerência",
-                "prioridade": "Média",
-                "status": "Pendente",
-                "observacoes": "E-mail de teste para verificar a configuração SMTP.",
-                "categoria": "Teste",
-                "unidade": "Unid.",
-                "urgencia": False,
-                "estimativa_horas": 1.0,
-                "data_criacao_formatada": agora_fortaleza().strftime("%d/%m/%Y %H:%M")
-            }
-            
-            with st.spinner("Enviando e-mail de teste..."):
-                if enviar_email_alerta(demanda_teste):
-                    st.success("✅ E-mail de teste enviado com sucesso!")
-                else:
-                    st.error("❌ Falha ao enviar e-mail de teste.")
-    
-    with col2:
-        if st.button("🔄 Verificar Configuração", use_container_width=True):
-            if not config_email["smtp_user"] or not config_email["smtp_password"]:
-                st.warning("⚠️ Configurações SMTP incompletas.")
-            elif not config_email["admin_emails"] or not config_email["admin_emails"][0]:
-                st.warning("⚠️ Nenhum e-mail de administrador configurado.")
-            else:
-                st.success(f"✅ Configuração OK")
-                st.info(f"**Servidor:** {config_email['smtp_server']}:{config_email['smtp_port']}")
-                st.info(f"**De:** {config_email['from_email']}")
-                st.info(f"**Para:** {', '.join(config_email['admin_emails'])}")
-                st.info(f"**Status:** {'✅ Ativo' if config_email['enviar_emails'] else '❌ Inativo'}")
-
-# =============================
 # Páginas
 # =============================
 def pagina_inicial():
@@ -1365,9 +979,9 @@ def pagina_inicial():
         color: white;
         margin-bottom: 30px;
     ">
-        <h1 style="margin: 0; font-size: 2.5rem;">🚂 Sistema de Demandas GRBANABUIU</h1>
+        <h1 style="margin: 0; font-size: 2.5rem;">🖥️ Sistema de Demandas - GRBANABUIU</h1>
         <p style="margin: 10px 0 0 0; font-size: 1.1rem; opacity: 0.9;">
-            Gestão completa de solicitações com alertas por e-mail
+            Gestão completa de solicitações e comprovantes
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1387,7 +1001,6 @@ def pagina_inicial():
             <h3 style="color: #2c3e50; margin-top: 0;">📝 Solicitação e Consulta</h3>
             <p style="color: #555; line-height: 1.6;">
                 Envie uma nova demanda e consulte depois usando nome ou código.
-                <strong>Alertas automáticos por e-mail</strong> para administradores.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -1409,7 +1022,7 @@ def pagina_inicial():
             <h3 style="color: #2c3e50; margin-top: 0;">🔧 Área Administrativa</h3>
             <p style="color: #555; line-height: 1.6;">
                 Acesso para supervisores e administradores. 
-                Gestão completa de demandas, usuários, e <strong>configuração de alertas por e-mail</strong>.
+                Gestão completa de demandas, usuários e relatórios.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -1441,8 +1054,6 @@ def pagina_solicitacao():
         **Código da demanda:** `{st.session_state.ultima_demanda_codigo}`
         
         Guarde este código para consultar o status posteriormente.
-        
-        📧 *Alertas por e-mail foram enviados aos administradores.*
         """)
         
         st.balloons()
@@ -1593,7 +1204,6 @@ def pagina_login_admin():
         <h3 style="margin: 0; color: white;">🔒 Acesso Restrito</h3>
         <p style="margin: 10px 0 0 0; opacity: 0.9;">
             Esta área é exclusiva para administradores e supervisores autorizados.
-            Configure alertas por e-mail para novas demandas.
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1626,6 +1236,116 @@ def pagina_login_admin():
         st.session_state.pagina_atual = "inicio"
         st.rerun()
 
+def pagina_gerenciar_usuarios():
+    st.header("👥 Gerenciamento de Usuários")
+    agora = agora_fortaleza()
+    st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
+
+    if not st.session_state.get("usuario_admin", False):
+        st.error("⛔ Apenas administradores.")
+        return
+
+    tab1, tab2 = st.tabs(["📋 Lista de Usuários", "➕ Novo Usuário"])
+
+    with tab1:
+        usuarios = listar_usuarios()
+        if not usuarios:
+            st.info("Nenhum usuário cadastrado.")
+            return
+
+        # Converter para DataFrame para melhor visualização
+        df = pd.DataFrame(usuarios)
+        df["is_admin"] = df["is_admin"].apply(lambda x: "✅" if x else "❌")
+        df["ativo"] = df["ativo"].apply(lambda x: "✅" if x else "❌")
+        
+        st.dataframe(
+            df[["id", "nome", "username", "departamento", "nivel_acesso", "is_admin", "ativo", "ultimo_login"]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.subheader("⚙️ Ações sobre Usuários")
+        op = st.selectbox("Selecione um usuário para gerenciar", 
+                         [f"{u['id']} - {u['nome']} ({u['username']})" for u in usuarios])
+        usuario_id = int(op.split(" - ")[0])
+        info = next((u for u in usuarios if u["id"] == usuario_id), None)
+        
+        if not info:
+            return
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**Nível de Acesso**")
+            novo_nivel = st.selectbox(
+                "Nível",
+                ["usuario", "supervisor", "administrador"],
+                index=["usuario", "supervisor", "administrador"].index(info["nivel_acesso"]),
+                key=f"nivel_{usuario_id}"
+            )
+            if st.button("💾 Salvar nível", key=f"save_nivel_{usuario_id}"):
+                ok, msg = atualizar_usuario(usuario_id, {"nivel_acesso": novo_nivel, "is_admin": (novo_nivel == "administrador")})
+                st.success(msg) if ok else st.error(msg)
+                st.rerun()
+
+        with col2:
+            st.markdown("**Alterar Senha**")
+            nova_senha = st.text_input("Nova senha", type="password", key=f"senha_{usuario_id}")
+            if st.button("🔐 Trocar senha", key=f"trocar_{usuario_id}"):
+                if not nova_senha:
+                    st.warning("Digite a nova senha.")
+                else:
+                    ok, msg = atualizar_usuario(usuario_id, {"senha": nova_senha})
+                    st.success(msg) if ok else st.error(msg)
+                    st.rerun()
+
+        with col3:
+            st.markdown("**Status do Usuário**")
+            if st.button("⛔ Desativar usuário", key=f"desativar_{usuario_id}"):
+                ok, msg = desativar_usuario(usuario_id)
+                st.success(msg) if ok else st.error(msg)
+                st.rerun()
+
+    with tab2:
+        st.markdown("### 👤 Cadastrar Novo Usuário")
+        with st.form("form_novo_usuario"):
+            col1, col2 = st.columns(2)
+            with col1:
+                nome = st.text_input("Nome Completo*")
+                email = st.text_input("Email*", placeholder="usuario@email.com")
+                username = st.text_input("Username*", placeholder="nome.usuario")
+            with col2:
+                departamento = st.selectbox("Departamento", 
+                    ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "TI", "RH", "Financeiro", "Outro"])
+                nivel_acesso = st.selectbox("Nível de Acesso", ["usuario", "supervisor", "administrador"])
+                senha = st.text_input("Senha*", type="password")
+                confirmar = st.text_input("Confirmar Senha*", type="password")
+
+            criar = st.form_submit_button("✅ Criar Usuário", type="primary")
+
+            if criar:
+                if not all([nome, email, username, senha, confirmar]):
+                    st.error("⚠️ Preencha todos os campos obrigatórios (*).")
+                elif senha != confirmar:
+                    st.error("❌ As senhas não coincidem.")
+                elif "@" not in email:
+                    st.error("❌ Email inválido.")
+                else:
+                    ok, msg = criar_usuario({
+                        "nome": nome,
+                        "email": email,
+                        "username": username,
+                        "senha": senha,
+                        "departamento": departamento,
+                        "nivel_acesso": nivel_acesso,
+                        "is_admin": (nivel_acesso == "administrador")
+                    })
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+
 def pagina_admin():
     if not st.session_state.get("usuario_logado", False):
         st.session_state.pagina_atual = "login_admin"
@@ -1657,7 +1377,7 @@ def pagina_admin():
     usuario_nivel = st.session_state.get("usuario_nivel", "usuario")
     usuario_admin = st.session_state.get("usuario_admin", False)
 
-    menu = ["🏠 Dashboard", "📋 Todas as Demandas", "✏️ Editar Demanda", "📊 Estatísticas", "📧 Alertas por E-mail", "⚙️ Configurações"]
+    menu = ["🏠 Dashboard", "📋 Todas as Demandas", "✏️ Editar Demanda", "📊 Estatísticas", "⚙️ Configurações"]
     if usuario_admin:
         menu.insert(4, "👥 Gerenciar Usuários")
 
@@ -1906,9 +1626,6 @@ def pagina_admin():
             with col2:
                 st.dataframe(df_depto, hide_index=True, use_container_width=True)
 
-    elif menu_sel == "📧 Alertas por E-mail":
-        pagina_config_email()
-
     elif menu_sel == "⚙️ Configurações":
         st.header("⚙️ Configurações do Sistema")
         
@@ -1934,23 +1651,17 @@ Timezone: America/Fortaleza
                 else:
                     st.error(msg)
         
-        # Configurações de e-mail
+        # Informações do sistema
         st.markdown("---")
-        st.subheader("📧 Configurações de E-mail")
-        
-        config_email = obter_config_email()
+        st.subheader("📊 Informações do Sistema")
         
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Servidor SMTP", config_email["smtp_server"])
-            st.metric("Porta", config_email["smtp_port"])
+            st.metric("Versão do Sistema", "3.0")
+            st.metric("Fuso Horário", "America/Fortaleza")
         with col2:
-            st.metric("Status", "✅ Ativo" if config_email["enviar_emails"] else "❌ Inativo")
-            st.metric("E-mails Admin", len(config_email["admin_emails"]))
-        
-        if st.button("⚙️ Configurar Alertas por E-mail", use_container_width=True):
-            st.session_state.pagina_atual = "config_email"
-            st.rerun()
+            st.metric("Design", "Comprovante Digital")
+            st.metric("Usuários Online", "1")
 
 # =============================
 # Boot do sistema
@@ -1984,8 +1695,6 @@ elif st.session_state.pagina_atual == "login_admin":
     pagina_login_admin()
 elif st.session_state.pagina_atual == "admin":
     pagina_admin()
-elif st.session_state.pagina_atual == "config_email":
-    pagina_config_email()
 else:
     st.session_state.pagina_atual = "inicio"
     st.rerun()
@@ -1993,18 +1702,10 @@ else:
 # =============================
 # Rodapé e informações de debug
 # =============================
-if st.session_state.pagina_atual in ["admin", "solicitacao", "config_email"]:
+if st.session_state.pagina_atual in ["admin", "solicitacao"]:
     st.sidebar.markdown("---")
     if DATABASE_URL:
         st.sidebar.success("✅ Conectado ao Railway Postgres")
-        
-        # Verificar configuração de e-mail
-        config_email = obter_config_email()
-        if config_email["enviar_emails"]:
-            st.sidebar.success("📧 Alertas por e-mail: ATIVO")
-        else:
-            st.sidebar.warning("📧 Alertas por e-mail: INATIVO")
-        
         if st.sidebar.checkbox("Mostrar informações técnicas", key="debug_info"):
             cfg = get_db_config()
             st.sidebar.text(f"Host: {cfg.get('host')}")
@@ -2012,15 +1713,8 @@ if st.session_state.pagina_atual in ["admin", "solicitacao", "config_email"]:
             st.sidebar.text(f"User: {cfg.get('user')}")
             st.sidebar.text(f"Port: {cfg.get('port')}")
             st.sidebar.text("Timezone: America/Fortaleza")
-            
-            # Informações de e-mail (ocultas por padrão)
-            if st.sidebar.checkbox("Mostrar configurações de e-mail", key="debug_email"):
-                st.sidebar.text(f"SMTP Server: {config_email['smtp_server']}")
-                st.sidebar.text(f"SMTP Port: {config_email['smtp_port']}")
-                st.sidebar.text(f"From: {config_email['from_email']}")
-                st.sidebar.text(f"Admin Emails: {len(config_email['admin_emails'])}")
     else:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas GRBANABUIU v3.1")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.0")
