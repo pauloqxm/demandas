@@ -866,14 +866,15 @@ def pagina_solicitacao():
 
         with col1:
             solicitante = st.text_input("👤 Nome do Solicitante*")
-            departamento = st.selectbox("🏢 Departamento*", ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "Outro"])
-            local = st.selectbox("📍 Local*", ["Gerência", "Fogareiro", "Quixeramobim", "Outro"])
-            categoria = st.selectbox("📂 Categoria", ["Combustível", "Materiais", "Equipamentos", "Ferramentas", "Alimentos", "Lubrificantes", "Outro"])
+            departamento = st.selectbox("🏢 Departamento*", ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"])
+            local = st.selectbox("📍 Local*", ["Selecione", "Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu", 
+            "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"])
+            categoria = st.selectbox("📂 Categoria", ["Selecione", "Alimentos", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"])
             
         with col2:
             item = st.text_input("📝 Descrição da Demanda*")
             quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
-            unidade = st.selectbox("📏 Unidade*", ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"])
+            unidade = st.selectbox("📏 Unidade*", ["Selecione", "Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"])
             estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5)
 
         col3, col4 = st.columns(2)
