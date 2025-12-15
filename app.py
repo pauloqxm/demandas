@@ -807,13 +807,13 @@ def render_comprovante_demanda(d: dict):
             
             # Grid de informações em formato de extrato
             info_grid = [
-                ("**Solicitante**", d.get("solicitante", "")),
-                ("**Departamento**", d.get("departamento", "")),
-                ("**Local**", d.get("local", "Gerência")),
-                ("**Categoria**", d.get("categoria", "Geral")),
-                ("**Quantidade**", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
-                ("**Estimativa**", f"{d.get('estimativa_horas', 0) or 0:.1f} horas" if d.get("estimativa_horas") else "Não informada"),
-                ("**Urgente**", "✅ Sim" if d.get("urgencia") else "❌ Não"),
+                ("Solicitante:", d.get("solicitante", "")),
+                ("Departamento:", d.get("departamento", "")),
+                ("Local:", d.get("local", "Gerência")),
+                ("Categoria:", d.get("categoria", "Geral")),
+                ("Quantidade:", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
+                ("Estimativa:", f"{d.get('estimativa_horas', 0) or 0:.1f} horas" if d.get("estimativa_horas") else "Não informada"),
+                ("Urgente:", "✅ Sim" if d.get("urgencia") else "❌ Não"),
             ]
             
             for label, value in info_grid:
