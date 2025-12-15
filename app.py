@@ -46,10 +46,10 @@ def formatar_data_hora_fortaleza(dt: datetime, formato: str = "%d/%m/%Y %H:%M") 
 # Cores para status
 # =============================
 CORES_STATUS = {
-    "Pendente": "#FF6B6B",      # Vermelho suave
-    "Em andamento": "#4ECDC4",  # Turquesa
-    "Concluída": "#06D6A0",     # Verde
-    "Cancelada": "#B0B0B0"      # Cinza
+    "Pendente": "#FF6B6B",
+    "Em andamento": "#4ECDC4",
+    "Concluída": "#06D6A0",
+    "Cancelada": "#B0B0B0"
 }
 
 CORES_PRIORIDADE = {
@@ -252,6 +252,12 @@ def verificar_e_atualizar_tabela_demandas():
                 if "codigo" not in existentes:
                     alters.append("ADD COLUMN codigo VARCHAR(20)")
 
+                # NOVOS CAMPOS (admin)
+                if "almoxarifado" not in existentes:
+                    alters.append("ADD COLUMN almoxarifado BOOLEAN DEFAULT FALSE")
+                if "valor" not in existentes:
+                    alters.append("ADD COLUMN valor DECIMAL(12,2)")
+
                 for alt in alters:
                     try:
                         cur.execute(f"ALTER TABLE demandas {alt}")
@@ -296,7 +302,11 @@ def init_database():
                         categoria VARCHAR(100),
                         unidade VARCHAR(50) DEFAULT 'Unid.',
                         urgencia BOOLEAN DEFAULT FALSE,
-                        estimativa_horas DECIMAL(5,2)
+                        estimativa_horas DECIMAL(5,2),
+
+                        -- NOVOS CAMPOS (admin)
+                        almoxarifado BOOLEAN DEFAULT FALSE,
+                        valor DECIMAL(12,2)
                     )
                 """)
 
@@ -489,7 +499,7 @@ def carregar_demandas(filtros=None):
                     SELECT id, codigo, item, quantidade, solicitante, departamento,
                            local, prioridade, observacoes, status, categoria,
                            unidade, urgencia, data_criacao, data_atualizacao,
-                           estimativa_horas
+                           estimativa_horas, almoxarifado, valor
                     FROM demandas
                     WHERE 1=1
                 """
@@ -576,8 +586,8 @@ def adicionar_demanda(dados):
                         cur.execute("""
                             INSERT INTO demandas
                             (codigo, item, quantidade, solicitante, departamento, local, prioridade,
-                             observacoes, categoria, unidade, urgencia, estimativa_horas)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             observacoes, categoria, unidade, urgencia, estimativa_horas, almoxarifado, valor)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             RETURNING id, codigo
                         """, (
                             codigo,
@@ -591,7 +601,9 @@ def adicionar_demanda(dados):
                             dados.get("categoria", "Geral"),
                             dados.get("unidade", "Unid."),
                             dados.get("urgencia", False),
-                            dados.get("estimativa_horas")
+                            dados.get("estimativa_horas"),
+                            bool(dados.get("almoxarifado", False)),
+                            dados.get("valor")
                         ))
                         nova_id, codigo_ok = cur.fetchone()
 
@@ -625,6 +637,7 @@ def atualizar_demanda(demanda_id, dados):
                         departamento = %s, local = %s, prioridade = %s,
                         observacoes = %s, status = %s, categoria = %s,
                         unidade = %s, urgencia = %s, estimativa_horas = %s,
+                        almoxarifado = %s, valor = %s,
                         data_atualizacao = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (
@@ -640,6 +653,8 @@ def atualizar_demanda(demanda_id, dados):
                     dados.get("unidade", "Unid."),
                     dados.get("urgencia", False),
                     dados.get("estimativa_horas"),
+                    bool(dados.get("almoxarifado", False)),
+                    dados.get("valor"),
                     demanda_id
                 ))
 
@@ -701,7 +716,8 @@ def obter_estatisticas():
                         COUNT(CASE WHEN status = 'Concluída' THEN 1 END) as concluidas,
                         COUNT(CASE WHEN urgencia = TRUE THEN 1 END) as urgentes,
                         COALESCE(SUM(quantidade), 0) as total_itens,
-                        COALESCE(SUM(estimativa_horas), 0) as total_horas
+                        COALESCE(SUM(estimativa_horas), 0) as total_horas,
+                        COALESCE(SUM(valor), 0) as total_valor
                     FROM demandas
                 """)
                 estat["totais"] = cur.fetchone() or {}
@@ -741,18 +757,29 @@ def obter_estatisticas():
         return {}
 
 # =============================
+# UI helper: formatação BR simples
+# =============================
+def formatar_brl(valor) -> str:
+    try:
+        v = float(valor)
+    except Exception:
+        return "R$ 0,00"
+    s = f"{v:,.2f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {s}"
+
+# =============================
 # UI helper: Comprovante (novo design)
 # =============================
-def render_comprovante_demanda(d: dict):
-    """Renderiza uma demanda como um comprovante estilizado"""
-    
-    # Configurar cores baseadas no status
+def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
+    """Renderiza uma demanda como comprovante estilizado.
+    mostrar_campos_admin = True apenas na área administrativa.
+    """
+
     cor_status = CORES_STATUS.get(d.get("status", "Pendente"), "#FF6B6B")
     cor_prioridade = CORES_PRIORIDADE.get(d.get("prioridade", "Média"), "#FFD166")
-    
-    # Cabeçalho do comprovante
+
     with st.container():
-        # Cabeçalho principal com borda colorida por status
         st.markdown(f"""
         <div style="
             border-left: 8px solid {cor_status};
@@ -768,7 +795,7 @@ def render_comprovante_demanda(d: dict):
                         📋 Comprovante de Demanda
                     </h3>
                     <p style="margin: 5px 0 0 0; color: #7f8c8d; font-size: 0.9rem;">
-                        Código: <strong>{d.get('codigo', 'SEM-COD')}</strong> | 
+                        Código: <strong>{d.get('codigo', 'SEM-COD')}</strong> |
                         Criado em: {d.get('data_criacao_formatada', '')}
                     </p>
                 </div>
@@ -797,25 +824,29 @@ def render_comprovante_demanda(d: dict):
             </div>
         </div>
         """, unsafe_allow_html=True)
-    
-    # Seção de "Extrato" - campos à esquerda, valores à direita
+
     with st.container():
         col1, col2 = st.columns([1, 1])
-        
+
         with col1:
             st.markdown("### 📄 Extrato da Demanda")
-            
-            # Grid de informações em formato de extrato
+
             info_grid = [
                 ("Solicitante:", d.get("solicitante", "")),
                 ("Departamento:", d.get("departamento", "")),
                 ("Local:", d.get("local", "Gerência")),
                 ("Categoria:", d.get("categoria", "Geral")),
                 ("Quantidade:", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
-                ("Estimativa:", f"{d.get('estimativa_horas', 0) or 0:.1f} horas" if d.get("estimativa_horas") else "Não informada"),
+                ("Estimativa:", f"{float(d.get('estimativa_horas') or 0):.1f} horas" if d.get("estimativa_horas") else "Não informada"),
                 ("Urgente:", "✅ Sim" if d.get("urgencia") else "❌ Não"),
             ]
-            
+
+            if mostrar_campos_admin:
+                info_grid.extend([
+                    ("Almoxarifado:", "✅ Sim" if bool(d.get("almoxarifado")) else "❌ Não"),
+                    ("Valor:", formatar_brl(d.get("valor") or 0)),
+                ])
+
             for label, value in info_grid:
                 st.markdown(f"""
                 <div style="
@@ -828,18 +859,16 @@ def render_comprovante_demanda(d: dict):
                     <span style="font-weight: bold; color: #2c3e50;">{value}</span>
                 </div>
                 """, unsafe_allow_html=True)
-        
+
         with col2:
-            # Botão para copiar código
             st.markdown("### 🔗 Ações")
-            codigo = d.get('codigo', '')
+            codigo = d.get("codigo", "")
             if st.button("📋 Copiar Código", key=f"copy_{codigo}", use_container_width=True):
                 st.session_state.copied_code = codigo
                 st.toast(f"Código {codigo} copiado!", icon="📋")
-                time.sleep(0.5)
+                time.sleep(0.3)
                 st.rerun()
-            
-            # Seção de observações
+
             st.markdown("### 💬 Observações")
             obs = d.get("observacoes", "Sem observações.")
             st.markdown(f"""
@@ -855,8 +884,7 @@ def render_comprovante_demanda(d: dict):
                 {obs if obs else "Sem observações registradas."}
             </div>
             """, unsafe_allow_html=True)
-            
-            # Descrição completa
+
             st.markdown("### 📝 Descrição Completa")
             item_desc = d.get("item", "")
             st.markdown(f"""
@@ -872,21 +900,19 @@ def render_comprovante_demanda(d: dict):
                 {item_desc}
             </div>
             """, unsafe_allow_html=True)
-    
-    # Timeline do histórico
+
     st.markdown("---")
     st.markdown("### 📅 Histórico da Demanda")
     hist = carregar_historico_demanda(int(d["id"]))
-    
+
     if not hist:
         st.info("📭 Sem histórico registrado ainda.")
     else:
-        for i, h in enumerate(hist):
-            data_formatada = h.get('data_acao_formatada', '')
-            usuario = h.get('usuario', '')
-            acao = h.get('acao', '')
-            
-            # Cor baseada na ação
+        for h in hist:
+            data_formatada = h.get("data_acao_formatada", "")
+            usuario = h.get("usuario", "")
+            acao = h.get("acao", "")
+
             if "CRIAÇÃO" in acao:
                 cor_acao = "#2ecc71"
                 icone = "🆕"
@@ -899,7 +925,7 @@ def render_comprovante_demanda(d: dict):
             else:
                 cor_acao = "#95a5a6"
                 icone = "📝"
-            
+
             st.markdown(f"""
             <div style="
                 display: flex;
@@ -924,27 +950,24 @@ def render_comprovante_demanda(d: dict):
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            
-            # Detalhes expandíveis
+
             detalhes = h.get("detalhes")
             if detalhes:
                 with st.expander("🔍 Ver detalhes", expanded=False):
                     st.json(detalhes)
-    
+
     st.markdown("---")
 
-def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
-    """Renderiza resultados com o novo design de comprovante"""
+def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados", mostrar_campos_admin: bool = False):
     st.subheader(titulo)
-    
+
     if not demandas:
         st.info("📭 Nenhuma demanda encontrada.")
         return
-    
-    # Resumo do extrato no topo
+
     total_itens = sum(d.get("quantidade", 0) for d in demandas)
     total_urgentes = sum(1 for d in demandas if d.get("urgencia"))
-    
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("📋 Total de Demandas", len(demandas))
@@ -952,16 +975,15 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
         st.metric("📦 Total de Itens", total_itens)
     with col3:
         st.metric("⚠️ Urgentes", total_urgentes)
-    
+
     st.caption("🔍 Clique nos comprovantes abaixo para expandir e ver todos os detalhes")
-    
-    # Renderizar cada demanda como comprovante
+
     for d in demandas:
         with st.expander(
             f"📋 {d.get('codigo', 'SEM-COD')} | 👤 {d.get('solicitante', '')} | 📍 {d.get('local', '')} | 🏷️ {d.get('status', '')}",
             expanded=False
         ):
-            render_comprovante_demanda(d)
+            render_comprovante_demanda(d, mostrar_campos_admin=mostrar_campos_admin)
 
 # =============================
 # Páginas
@@ -969,8 +991,7 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
 def pagina_inicial():
     agora = agora_fortaleza()
     st.sidebar.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
-    
-    # Header com gradiente
+
     st.markdown("""
     <div style="
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -985,9 +1006,9 @@ def pagina_inicial():
         </p>
     </div>
     """, unsafe_allow_html=True)
-    
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.markdown("""
         <div style="
@@ -1004,11 +1025,11 @@ def pagina_inicial():
             </p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         if st.button("📄 Acessar Solicitação", type="primary", use_container_width=True, key="btn_solicitacao"):
             st.session_state.pagina_atual = "solicitacao"
             st.rerun()
-    
+
     with col2:
         st.markdown("""
         <div style="
@@ -1021,43 +1042,40 @@ def pagina_inicial():
         ">
             <h3 style="color: #2c3e50; margin-top: 0;">🔧 Área Administrativa</h3>
             <p style="color: #555; line-height: 1.6;">
-                Acesso para supervisores e administradores. 
+                Acesso para supervisores e administradores.
                 Gestão completa de demandas, usuários e relatórios.
             </p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         if st.button("🔐 Entrar como Admin", use_container_width=True, key="btn_admin"):
             st.session_state.pagina_atual = "login_admin"
             st.rerun()
-    
-    # Rodapé
+
     st.markdown("---")
     st.caption(f"🕒 Horário atual do sistema: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Fortaleza)")
 
 def pagina_solicitacao():
-    """Página de solicitação com formulário no topo e consulta na parte inferior"""
     st.header("📝 Solicitação e Consulta")
     agora = agora_fortaleza()
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
-    
+
     if "solicitacao_enviada" not in st.session_state:
         st.session_state.solicitacao_enviada = False
     if "ultima_demanda_codigo" not in st.session_state:
         st.session_state.ultima_demanda_codigo = None
-    
-    # CONFIRMAÇÃO DE ENVIO (se houver)
+
     if st.session_state.solicitacao_enviada:
         st.success(f"""
-        ✅ **Solicitação enviada com sucesso!** 
-        
+        ✅ **Solicitação enviada com sucesso!**
+
         **Código da demanda:** `{st.session_state.ultima_demanda_codigo}`
-        
+
         Guarde este código para consultar o status posteriormente.
         """)
-        
+
         st.balloons()
-        
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("📝 Enviar nova solicitação", use_container_width=True):
@@ -1070,20 +1088,18 @@ def pagina_solicitacao():
                 st.session_state.solicitacao_enviada = False
                 st.session_state.ultima_demanda_codigo = None
                 st.rerun()
-        
-        # Mostrar o comprovante da demanda recém-criada
+
         st.markdown("---")
         st.subheader("📋 Comprovante da Demanda Enviada")
-        
-        # Buscar a demanda recém-criada
+
         filtros = {"codigo": st.session_state.ultima_demanda_codigo}
         resultado = carregar_demandas(filtros)
         if resultado:
-            render_comprovante_demanda(resultado[0])
-        
+            # NÃO mostrar campos admin aqui
+            render_comprovante_demanda(resultado[0], mostrar_campos_admin=False)
+
         return
-    
-    # FORMULÁRIO DE ENVIO (PARTE SUPERIOR)
+
     with st.container():
         st.markdown("### 📝 Nova Solicitação")
         with st.form("form_nova_demanda", clear_on_submit=True):
@@ -1091,30 +1107,35 @@ def pagina_solicitacao():
 
             with col1:
                 solicitante = st.text_input("👤 Nome do Solicitante*", placeholder="Seu nome completo")
-                departamento = st.selectbox("🏢 Departamento*", 
-                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"])
-                local = st.selectbox("📍 Local*", 
-                    ["Selecione", "Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu", 
-                    "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"])
-                categoria = st.selectbox("📂 Categoria", 
-                    ["Selecione", "Alimentos", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"])
-                
+                departamento = st.selectbox(
+                    "🏢 Departamento*",
+                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"]
+                )
+                local = st.selectbox(
+                    "📍 Local*",
+                    ["Selecione", "Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
+                     "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
+                )
+                categoria = st.selectbox(
+                    "📂 Categoria",
+                    ["Selecione", "Alimentos", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"]
+                )
+
             with col2:
                 item = st.text_area("📝 Descrição da Demanda*", placeholder="Descreva detalhadamente o que está solicitando...", height=120)
                 quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
-                unidade = st.selectbox("📏 Unidade*", 
-                    ["Selecione", "Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"])
-                estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5, help="Tempo estimado para atendimento")
+                unidade = st.selectbox("📏 Unidade*",
+                    ["Selecione", "Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
+                )
+                estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5)
 
             col3, col4 = st.columns(2)
             with col3:
                 prioridade = st.selectbox("🚨 Prioridade", ["Baixa", "Média", "Alta", "Urgente"], index=1)
-                urgencia = st.checkbox("🚨 Marcar como URGENTE?", help="Demandas urgentes têm prioridade máxima")
+                urgencia = st.checkbox("🚨 Marcar como URGENTE?")
 
             with col4:
-                observacoes = st.text_area("💬 Observações Adicionais", 
-                    placeholder="Informações adicionais, restrições, prazos especiais...", 
-                    height=100)
+                observacoes = st.text_area("💬 Observações Adicionais", placeholder="Informações adicionais...", height=100)
 
             submitted = st.form_submit_button("✅ Enviar Solicitação", type="primary", use_container_width=True)
 
@@ -1138,7 +1159,8 @@ def pagina_solicitacao():
                             "categoria": categoria,
                             "unidade": unidade,
                             "urgencia": bool(urgencia),
-                            "estimativa_horas": float(estimativa_horas) if estimativa_horas and estimativa_horas > 0 else None
+                            "estimativa_horas": float(estimativa_horas) if estimativa_horas and estimativa_horas > 0 else None,
+                            # NÃO enviar almoxarifado/valor aqui
                         }
 
                         res = adicionar_demanda(nova_demanda)
@@ -1150,12 +1172,11 @@ def pagina_solicitacao():
                             st.error("❌ Erro ao salvar a solicitação. Tente novamente.")
                 else:
                     st.error("⚠️ Preencha todos os campos obrigatórios (*)")
-    
-    # CONSULTA DO USUÁRIO (PARTE INFERIOR - com comprovantes clicáveis)
+
     st.markdown("---")
     st.markdown("### 🔎 Consultar Demandas")
     st.caption("Busque por nome do solicitante ou código da demanda")
-    
+
     with st.expander("🔍 Abrir painel de consulta", expanded=True):
         colc1, colc2 = st.columns(2)
         with colc1:
@@ -1176,12 +1197,11 @@ def pagina_solicitacao():
                 st.warning("⚠️ Digite o nome do solicitante ou o código para buscar.")
             else:
                 resultados = carregar_demandas(filtros)
-                render_resultados_com_detalhes(resultados, "📋 Demandas Encontradas")
+                # NÃO mostrar campos admin aqui
+                render_resultados_com_detalhes(resultados, "📋 Demandas Encontradas", mostrar_campos_admin=False)
         else:
-            # Mostrar últimas 5 demandas como exemplo
             st.info("ℹ️ As últimas demandas aparecerão aqui após a busca.")
-    
-    # Botão de voltar
+
     st.markdown("---")
     if st.button("← Voltar ao Início", use_container_width=True):
         st.session_state.pagina_atual = "inicio"
@@ -1192,7 +1212,7 @@ def pagina_login_admin():
     st.markdown("---")
     agora = agora_fortaleza()
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
-    
+
     st.markdown("""
     <div style="
         background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
@@ -1207,7 +1227,7 @@ def pagina_login_admin():
         </p>
     </div>
     """, unsafe_allow_html=True)
-    
+
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("form_admin_login"):
@@ -1253,11 +1273,10 @@ def pagina_gerenciar_usuarios():
             st.info("Nenhum usuário cadastrado.")
             return
 
-        # Converter para DataFrame para melhor visualização
         df = pd.DataFrame(usuarios)
         df["is_admin"] = df["is_admin"].apply(lambda x: "✅" if x else "❌")
         df["ativo"] = df["ativo"].apply(lambda x: "✅" if x else "❌")
-        
+
         st.dataframe(
             df[["id", "nome", "username", "departamento", "nivel_acesso", "is_admin", "ativo", "ultimo_login"]],
             use_container_width=True,
@@ -1265,11 +1284,13 @@ def pagina_gerenciar_usuarios():
         )
 
         st.subheader("⚙️ Ações sobre Usuários")
-        op = st.selectbox("Selecione um usuário para gerenciar", 
-                         [f"{u['id']} - {u['nome']} ({u['username']})" for u in usuarios])
+        op = st.selectbox(
+            "Selecione um usuário para gerenciar",
+            [f"{u['id']} - {u['nome']} ({u['username']})" for u in usuarios]
+        )
         usuario_id = int(op.split(" - ")[0])
         info = next((u for u in usuarios if u["id"] == usuario_id), None)
-        
+
         if not info:
             return
 
@@ -1314,8 +1335,9 @@ def pagina_gerenciar_usuarios():
                 email = st.text_input("Email*", placeholder="usuario@email.com")
                 username = st.text_input("Username*", placeholder="nome.usuario")
             with col2:
-                departamento = st.selectbox("Departamento", 
-                    ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "TI", "RH", "Financeiro", "Outro"])
+                departamento = st.selectbox("Departamento",
+                    ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "TI", "RH", "Financeiro", "Outro"]
+                )
                 nivel_acesso = st.selectbox("Nível de Acesso", ["usuario", "supervisor", "administrador"])
                 senha = st.text_input("Senha*", type="password")
                 confirmar = st.text_input("Confirmar Senha*", type="password")
@@ -1353,8 +1375,7 @@ def pagina_admin():
         return
 
     agora = agora_fortaleza()
-    
-    # Sidebar de navegação
+
     st.sidebar.markdown(f"""
     <div style="
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -1370,7 +1391,7 @@ def pagina_admin():
         </p>
     </div>
     """, unsafe_allow_html=True)
-    
+
     st.sidebar.caption(f"🕒 {agora.strftime('%d/%m/%Y %H:%M')} (Fortaleza)")
     st.sidebar.markdown("---")
 
@@ -1403,60 +1424,52 @@ def pagina_admin():
         st.session_state.pagina_atual = "inicio"
         st.rerun()
 
-    # Aplicar filtros
     filtros = {}
     if status_filtro:
         filtros["status"] = status_filtro
     if prioridade_filtro:
         filtros["prioridade"] = prioridade_filtro
 
-    # Título da página atual
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M:%S')}")
 
-    # Conteúdo baseado na seleção do menu
     if menu_sel == "🏠 Dashboard":
         st.header("📊 Dashboard Administrativo")
         est = obter_estatisticas()
         if not est:
             st.info("📭 Sem dados disponíveis.")
             return
-        
+
         totais = est.get("totais", {})
-        
-        # Métricas principais
+
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("📋 Total", totais.get("total", 0))
-        col2.metric("⏳ Pendentes", totais.get("pendentes", 0), 
-                   delta=f"+{totais.get('em_andamento', 0)} em andamento")
+        col2.metric("⏳ Pendentes", totais.get("pendentes", 0), delta=f"+{totais.get('em_andamento', 0)} em andamento")
         col3.metric("⚠️ Urgentes", totais.get("urgentes", 0))
         col4.metric("📦 Total Itens", totais.get("total_itens", 0))
-        
-        # Últimas demandas
+
         st.markdown("---")
         st.subheader("📋 Últimas Demandas")
         rec = carregar_demandas(filtros)[:15]
-        render_resultados_com_detalhes(rec, "Últimas 15 demandas")
+        render_resultados_com_detalhes(rec, "Últimas 15 demandas", mostrar_campos_admin=True)
 
     elif menu_sel == "📋 Todas as Demandas":
         st.header("📋 Todas as Demandas")
-        
-        # Barra de busca
+
         col1, col2 = st.columns([3, 1])
         with col1:
-            busca = st.text_input("🔎 Buscar por item, solicitante ou código", 
-                                 placeholder="Ex: 'material' ou '141225-01' ou 'Maria'")
+            busca = st.text_input("🔎 Buscar por item, solicitante ou código", placeholder="Ex: material ou 141225-01 ou Maria")
         with col2:
             st.write("")
             st.write("")
             if st.button("🔍 Buscar", use_container_width=True):
                 if busca.strip():
                     filtros["search"] = busca.strip()
-        
+
         if busca.strip() and "search" not in filtros:
             filtros["search"] = busca.strip()
-        
+
         dados = carregar_demandas(filtros)
-        render_resultados_com_detalhes(dados, "Resultados da Busca")
+        render_resultados_com_detalhes(dados, "Resultados da Busca", mostrar_campos_admin=True)
 
     elif menu_sel == "✏️ Editar Demanda":
         if usuario_nivel not in ["supervisor", "administrador"]:
@@ -1464,82 +1477,90 @@ def pagina_admin():
             return
 
         st.header("✏️ Editar Demanda")
-        
-        # Busca para edição
+
         todas = carregar_demandas()
         if not todas:
             st.info("📭 Nenhuma demanda cadastrada.")
             return
 
-        # Selecionar demanda para editar
         opcoes = [f"{d.get('codigo','SEM-COD')} | {d['solicitante']} | {d['item'][:50]}..." for d in todas]
         escolha = st.selectbox("Selecione uma demanda para editar", opcoes, index=0)
-        
+
         if escolha:
-            # Extrair ID da demanda selecionada
             codigo_selecionado = escolha.split("|")[0].strip()
             demanda_id = next((d["id"] for d in todas if d.get("codigo") == codigo_selecionado), None)
-            
+
             if not demanda_id:
                 st.error("Demanda não encontrada.")
                 return
-            
-            # Carregar dados atuais
+
             demanda_atual = next((d for d in todas if d["id"] == demanda_id), None)
             if not demanda_atual:
                 st.error("Erro ao carregar dados da demanda.")
                 return
-            
+
             st.markdown(f"**Editando demanda:** `{demanda_atual.get('codigo', '')}`")
-            
-            # Formulário de edição
+
             with st.form(f"form_editar_{demanda_id}"):
                 col1, col2 = st.columns(2)
-                
+
                 with col1:
                     item_edit = st.text_area("📝 Descrição", value=demanda_atual["item"], height=100)
                     quantidade_edit = st.number_input("🔢 Quantidade", min_value=1, value=int(demanda_atual["quantidade"]))
                     solicitante_edit = st.text_input("👤 Solicitante", value=demanda_atual["solicitante"])
-                    
-                    # Listas atualizadas
-                    departamentos_lista = ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "Outro"]
-                    locais_lista = ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu", 
-                                  "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
-                    
-                    dep_index = departamentos_lista.index(demanda_atual["departamento"]) if demanda_atual["departamento"] in departamentos_lista else 0
-                    local_edit = st.selectbox("📍 Local", locais_lista, 
-                                            index=locais_lista.index(demanda_atual.get("local", "Gerência")) if demanda_atual.get("local", "Gerência") in locais_lista else 0)
-                
+
+                    locais_lista = ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
+                                    "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
+
+                    local_atual = demanda_atual.get("local", "Gerência")
+                    local_index = locais_lista.index(local_atual) if local_atual in locais_lista else 0
+                    local_edit = st.selectbox("📍 Local", locais_lista, index=local_index)
+
                 with col2:
                     prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
                     status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
-                    
+
                     pri_index = prioridade_lista.index(demanda_atual["prioridade"]) if demanda_atual["prioridade"] in prioridade_lista else 1
                     st_index = status_lista.index(demanda_atual["status"]) if demanda_atual["status"] in status_lista else 0
-                    
+
                     prioridade_edit = st.selectbox("🚨 Prioridade", prioridade_lista, index=pri_index)
                     status_edit = st.selectbox("📊 Status", status_lista, index=st_index)
-                    
+
                     unidades_lista = ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
-                    uni_index = unidades_lista.index(demanda_atual.get("unidade", "Unid.")) if demanda_atual.get("unidade", "Unid.") in unidades_lista else 2
-                    
+                    unidade_atual = demanda_atual.get("unidade", "Unid.")
+                    uni_index = unidades_lista.index(unidade_atual) if unidade_atual in unidades_lista else 2
+
                     categoria_edit = st.text_input("📂 Categoria", value=demanda_atual.get("categoria") or "Geral")
                     unidade_edit = st.selectbox("📏 Unidade", unidades_lista, index=uni_index)
                     urgencia_edit = st.checkbox("🚨 Urgente", value=bool(demanda_atual.get("urgencia", False)))
+
+                    # NOVOS CAMPOS (somente admin)
+                    almoxarifado_edit = st.selectbox(
+                        "📦 Almoxarifado",
+                        ["Não", "Sim"],
+                        index=1 if bool(demanda_atual.get("almoxarifado", False)) else 0
+                    )
+                    valor_edit = st.number_input(
+                        "💰 Valor (R$)",
+                        min_value=0.0,
+                        value=float(demanda_atual.get("valor") or 0.0),
+                        step=10.0,
+                        format="%.2f"
+                    )
+
                     observacoes_edit = st.text_area("💬 Observações", value=demanda_atual.get("observacoes") or "", height=100)
-                
-                # Botões de ação
+
                 col_b1, col_b2, col_b3 = st.columns(3)
                 salvar = col_b1.form_submit_button("💾 Salvar Alterações", type="primary")
                 excluir = col_b2.form_submit_button("🗑️ Excluir Demanda") if usuario_admin else False
                 cancelar = col_b3.form_submit_button("↻ Cancelar")
-                
+
                 if salvar:
                     ok = atualizar_demanda(demanda_id, {
                         "item": item_edit,
                         "quantidade": int(quantidade_edit),
                         "solicitante": solicitante_edit,
-                        "departamento": demanda_atual["departamento"],  # Mantém o departamento original
+                        "departamento": demanda_atual.get("departamento", ""),
                         "local": local_edit,
                         "prioridade": prioridade_edit,
                         "status": status_edit,
@@ -1548,19 +1569,24 @@ def pagina_admin():
                         "urgencia": bool(urgencia_edit),
                         "observacoes": observacoes_edit,
                         "estimativa_horas": demanda_atual.get("estimativa_horas"),
+                        "almoxarifado": (almoxarifado_edit == "Sim"),
+                        "valor": float(valor_edit) if valor_edit and valor_edit > 0 else None,
                     })
                     if ok:
                         st.success("✅ Demanda atualizada com sucesso!")
                         st.rerun()
-                
+
                 if excluir and usuario_admin:
-                    if st.warning("⚠️ Tem certeza que deseja excluir esta demanda? Esta ação não pode ser desfeita."):
-                        if excluir_demanda(demanda_id):
-                            st.warning("🗑️ Demanda excluída.")
-                            st.rerun()
-                
+                    if excluir_demanda(demanda_id):
+                        st.warning("🗑️ Demanda excluída.")
+                        st.rerun()
+
                 if cancelar:
                     st.rerun()
+
+            st.markdown("---")
+            st.subheader("📋 Prévia do Comprovante (Admin)")
+            render_comprovante_demanda(demanda_atual, mostrar_campos_admin=True)
 
     elif menu_sel == "👥 Gerenciar Usuários":
         pagina_gerenciar_usuarios()
@@ -1568,58 +1594,40 @@ def pagina_admin():
     elif menu_sel == "📊 Estatísticas":
         st.header("📊 Estatísticas Avançadas")
         est = obter_estatisticas()
-        
+
         if not est:
             st.info("📭 Sem dados disponíveis para análise.")
             return
-        
+
         totais = est.get("totais", {})
-        
-        # Métricas principais
         st.metric("⏱️ Total de horas estimadas", f"{float(totais.get('total_horas', 0) or 0):.1f}h")
-        
+        st.metric("💰 Total de valores", formatar_brl(totais.get("total_valor", 0) or 0))
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             if est.get("por_status"):
                 st.subheader("📈 Distribuição por Status")
                 df_status = pd.DataFrame(list(est["por_status"].items()), columns=["Status", "Quantidade"])
-                
-                # Adicionar cores
-                df_status["Cor"] = df_status["Status"].map(CORES_STATUS)
-                
-                # Mostrar gráfico
                 st.bar_chart(df_status.set_index("Status")["Quantidade"], use_container_width=True)
-                
-                # Mostrar tabela
                 st.dataframe(df_status, hide_index=True, use_container_width=True)
-        
+
         with col2:
             if est.get("por_prioridade"):
                 st.subheader("🚨 Distribuição por Prioridade")
                 df_prioridade = pd.DataFrame(list(est["por_prioridade"].items()), columns=["Prioridade", "Quantidade"])
-                
-                # Ordenar por prioridade
                 ordem_prioridade = ["Urgente", "Alta", "Média", "Baixa"]
                 df_prioridade["Ordem"] = df_prioridade["Prioridade"].apply(lambda x: ordem_prioridade.index(x) if x in ordem_prioridade else 99)
                 df_prioridade = df_prioridade.sort_values("Ordem")
-                
-                # Adicionar cores
-                df_prioridade["Cor"] = df_prioridade["Prioridade"].map(CORES_PRIORIDADE)
-                
-                # Mostrar gráfico
                 st.bar_chart(df_prioridade.set_index("Prioridade")["Quantidade"], use_container_width=True)
-                
-                # Mostrar tabela
                 st.dataframe(df_prioridade[["Prioridade", "Quantidade"]], hide_index=True, use_container_width=True)
-        
-        # Estatísticas por departamento
+
         if est.get("por_departamento"):
             st.markdown("---")
             st.subheader("🏢 Demandas por Departamento")
             df_depto = pd.DataFrame(list(est["por_departamento"].items()), columns=["Departamento", "Quantidade"])
             df_depto = df_depto.sort_values("Quantidade", ascending=False)
-            
+
             col1, col2 = st.columns([2, 1])
             with col1:
                 st.bar_chart(df_depto.set_index("Departamento")["Quantidade"], use_container_width=True)
@@ -1628,11 +1636,10 @@ def pagina_admin():
 
     elif menu_sel == "⚙️ Configurações":
         st.header("⚙️ Configurações do Sistema")
-        
-        # Informações da conexão
+
         st.subheader("🔌 Conexão com Banco de Dados")
         cfg = get_db_config()
-        
+
         st.code(f"""
 Host: {cfg.get('host')}
 Database: {cfg.get('database')}
@@ -1641,8 +1648,7 @@ Port: {cfg.get('port')}
 SSL Mode: {cfg.get('sslmode')}
 Timezone: America/Fortaleza
         """, language="bash")
-        
-        # Teste de conexão
+
         if st.button("🔄 Testar Conexão com Banco de Dados", use_container_width=True):
             with st.spinner("Testando conexão..."):
                 ok, msg = test_db_connection()
@@ -1650,11 +1656,10 @@ Timezone: America/Fortaleza
                     st.success(msg)
                 else:
                     st.error(msg)
-        
-        # Informações do sistema
+
         st.markdown("---")
         st.subheader("📊 Informações do Sistema")
-        
+
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Versão do Sistema", "3.0")
