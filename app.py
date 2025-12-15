@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import hashlib
 import pytz
 import html
+import textwrap
 
 # =============================
 # Configuração da página
@@ -909,7 +910,7 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
     concl = sum(1 for d in demandas if "conclu" in (d.get("status") or "").lower())
 
     st.markdown(
-        f"""
+        textwrap.dedent(f"""
         <div class="resumo-wrap">
           <div class="pill">📌 Total: {total}</div>
           <div class="pill">🚨 Urgentes: {urgentes}</div>
@@ -917,7 +918,7 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
           <div class="pill">🔵 Em andamento: {andamento}</div>
           <div class="pill">🟢 Concluídas: {concl}</div>
         </div>
-        """,
+        """),
         unsafe_allow_html=True
     )
 
@@ -946,7 +947,7 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
         label = f"📌 {codigo} | {status} | {prioridade} | {solicitante} | {item_curto}"
 
         with st.expander(label, expanded=False):
-            header_html = f"""
+            header_html = textwrap.dedent(f"""
               <div class="cardx status-{status_kind}">
                 <div class="top">
                   <div>
@@ -961,7 +962,7 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
                   </div>
                 </div>
               </div>
-            """
+            """)
             st.markdown(header_html, unsafe_allow_html=True)
 
             # Botão "Copiar código" (Streamlit já oferece copiar no st.code)
@@ -983,39 +984,34 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
             extrato += "</div></div>"
             st.markdown(extrato, unsafe_allow_html=True)
 
-            st.markdown(f"""
+            st.markdown(textwrap.dedent(f"""
               <div class="descbox">
                 <div class="h">Descrição</div>
                 <div>{html.escape(item) if item else "Sem descrição."}</div>
               </div>
-            """, unsafe_allow_html=True)
+            """), unsafe_allow_html=True)
 
             obs = d.get("observacoes") or ""
-            st.markdown(f"""
+            st.markdown(textwrap.dedent(f"""
               <div class="descbox">
                 <div class="h">Observações</div>
                 <div>{html.escape(obs) if obs else "<span class='muted'>Sem observações.</span>"}</div>
               </div>
-            """, unsafe_allow_html=True)
+            """), unsafe_allow_html=True)
 
             st.markdown("<div class='cardx'><b>Histórico</b></div>", unsafe_allow_html=True)
             hist = carregar_historico_demanda(int(d["id"]))
             if not hist:
                 st.info("Sem histórico registrado ainda.")
             else:
-                tl = "<ul class='timeline'>"
+                tl = ["<ul class='timeline'>"]
                 for h in hist:
                     datah = h.get("data_acao_formatada","")
                     acao = h.get("acao","")
                     usuario = h.get("usuario","")
-                    tl += f"""
-                      <li>
-                        <div class="t">{html.escape(datah)} • {html.escape(usuario)}</div>
-                        <div class="a">{html.escape(acao)}</div>
-                      </li>
-                    """
-                tl += "</ul>"
-                st.markdown(tl, unsafe_allow_html=True)
+                    tl.append(f"<li><div class='t'>{html.escape(datah)} • {html.escape(usuario)}</div><div class='a'>{html.escape(acao)}</div></li>")
+                tl.append("</ul>")
+                st.markdown("".join(tl), unsafe_allow_html=True)
 
 # =============================
 # Páginas
