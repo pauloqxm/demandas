@@ -205,7 +205,7 @@ def enviar_email_alerta(demanda: dict):
                     
                     {f"""
                     <div class="card">
-                        <h3>💬 Observações</h3>
+                        <h3>Observações</h3>
                         <p>{demanda.get('observacoes', 'Sem observações.')}</p>
                     </div>
                     """ if demanda.get('observacoes') else ''}
