@@ -15,8 +15,8 @@ import pytz
 # Configuração da página
 # =============================
 st.set_page_config(
-    page_title="Sistema de Demandas - Railway",
-    page_icon="🚂",
+    page_title="GRBANABUIU - Sistema de Demandas",
+    page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -798,7 +798,7 @@ def pagina_inicial():
 
     with col2:
         st.subheader("🔧 Área Administrativa")
-        st.markdown("Acesso para supervisores e administradores.")
+        st.markdown("Acesso para supervisores e administradores. Área adminstrativa com acesso controlado.")
         if st.button("🔐 Entrar como Admin", use_container_width=True):
             st.session_state.pagina_atual = "login_admin"
             st.rerun()
