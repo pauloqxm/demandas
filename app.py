@@ -869,11 +869,11 @@ def pagina_solicitacao():
             departamento = st.selectbox("🏢 Departamento*", ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "Outro"])
             local = st.selectbox("📍 Local*", ["Gerência", "Fogareiro", "Quixeramobim", "Outro"])
             categoria = st.selectbox("📂 Categoria", ["Combustível", "Materiais", "Equipamentos", "Ferramentas", "Alimentos", "Lubrificantes", "Outro"])
-            unidade = st.selectbox("📏 Unidade*", ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"])
-
+            
         with col2:
-            item = st.text_area("📝 Descrição da Demanda*", height=100)
+            item = st.text_input("📝 Descrição da Demanda*")
             quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
+            unidade = st.selectbox("📏 Unidade*", ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"])
             estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5)
 
         col3, col4 = st.columns(2)
