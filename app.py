@@ -16,7 +16,7 @@ import time
 # Configuração da página
 # =============================
 st.set_page_config(
-    page_title="GRBANABUIU - Sistema de Demandas",
+    page_title="Sistema de Demandas - GRBANABUIU",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -979,7 +979,7 @@ def pagina_inicial():
         color: white;
         margin-bottom: 30px;
     ">
-        <h1 style="margin: 0; font-size: 2.5rem;">🚂 Sistema de Demandas GRBANABUIU</h1>
+        <h1 style="margin: 0; font-size: 2.5rem;">🖥️ Sistema de Demandas - GRBANABUIU</h1>
         <p style="margin: 10px 0 0 0; font-size: 1.1rem; opacity: 0.9;">
             Gestão completa de solicitações e comprovantes
         </p>
@@ -1001,7 +1001,6 @@ def pagina_inicial():
             <h3 style="color: #2c3e50; margin-top: 0;">📝 Solicitação e Consulta</h3>
             <p style="color: #555; line-height: 1.6;">
                 Envie uma nova demanda e consulte depois usando nome ou código.
-                Cada demanda gera um <strong>comprovante digital</strong> com histórico completo.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -1718,4 +1717,4 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas GRBANABUIU v3.0")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.0")
