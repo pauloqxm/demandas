@@ -10,8 +10,7 @@ import os
 from urllib.parse import urlparse
 import hashlib
 import pytz
-import html
-import textwrap
+import time
 
 # =============================
 # Configuração da página
@@ -42,6 +41,23 @@ def formatar_data_hora_fortaleza(dt: datetime, formato: str = "%d/%m/%Y %H:%M") 
     if not dt:
         return ""
     return converter_para_fortaleza(dt).strftime(formato)
+
+# =============================
+# Cores para status
+# =============================
+CORES_STATUS = {
+    "Pendente": "#FF6B6B",      # Vermelho suave
+    "Em andamento": "#4ECDC4",  # Turquesa
+    "Concluída": "#06D6A0",     # Verde
+    "Cancelada": "#B0B0B0"      # Cinza
+}
+
+CORES_PRIORIDADE = {
+    "Urgente": "#FF6B6B",
+    "Alta": "#FF9E6D",
+    "Média": "#FFD166",
+    "Baixa": "#118AB2"
+}
 
 # =============================
 # Conexão Railway Postgres
@@ -725,293 +741,227 @@ def obter_estatisticas():
         return {}
 
 # =============================
-# UI: Extrato moderno
+# UI helper: Comprovante (novo design)
 # =============================
-def _status_kind(status: str) -> str:
-    s = (status or "").lower()
-    if "conclu" in s:
-        return "success"
-    if "andamento" in s:
-        return "info"
-    if "cancel" in s:
-        return "danger"
-    if "pend" in s:
-        return "warning"
-    return "neutral"
-
-def _prioridade_kind(pri: str) -> str:
-    p = (pri or "").lower()
-    if "urgente" in p:
-        return "danger"
-    if "alta" in p:
-        return "warning"
-    if "média" in p or "media" in p:
-        return "info"
-    return "neutral"
-
-def _badge(texto: str, kind: str = "neutral") -> str:
-    cls = f"badge {kind}"
-    return f"<span class='{cls}'>{html.escape(texto or '')}</span>"
-
-def _extrato_linha(label: str, valor: str) -> str:
-    return f"""
-      <div class="row">
-        <div class="k">{html.escape(label)}</div>
-        <div class="v" title="{html.escape(valor or '')}">{html.escape(valor or '')}</div>
-      </div>
-    """
-
-def _inject_css_extrato():
-    st.markdown("""
-    <style>
-      .cardx {
-        border: 1px solid rgba(255,255,255,.10);
-        background: rgba(255,255,255,.04);
-        border-radius: 16px;
-        padding: 14px 14px 10px 14px;
-        margin: 10px 0;
-        box-shadow: 0 8px 24px rgba(0,0,0,.12);
-      }
-      .cardx.status-success { border-left: 6px solid rgba(34,197,94,.75); }
-      .cardx.status-info    { border-left: 6px solid rgba(59,130,246,.75); }
-      .cardx.status-warning { border-left: 6px solid rgba(234,179,8,.75); }
-      .cardx.status-danger  { border-left: 6px solid rgba(239,68,68,.75); }
-      .top {
-        display:flex;
-        align-items:flex-start;
-        justify-content:space-between;
-        gap: 10px;
-      }
-      .title {
-        font-size: 1.02rem;
-        font-weight: 900;
-        line-height: 1.2;
-        margin: 0;
-      }
-      .sub {
-        opacity: .82;
-        font-size: .85rem;
-        margin-top: 4px;
-      }
-      .tags {
-        display:flex;
-        gap: 6px;
-        flex-wrap: wrap;
-        justify-content:flex-end;
-      }
-      .badge {
-        font-size: .72rem;
-        padding: 4px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(255,255,255,.16);
-        background: rgba(255,255,255,.06);
-        white-space: nowrap;
-        font-weight: 800;
-      }
-      .badge.success { background: rgba(34,197,94,.16); border-color: rgba(34,197,94,.35); }
-      .badge.warning { background: rgba(234,179,8,.16); border-color: rgba(234,179,8,.35); }
-      .badge.danger  { background: rgba(239,68,68,.16); border-color: rgba(239,68,68,.35); }
-      .badge.info    { background: rgba(59,130,246,.16); border-color: rgba(59,130,246,.35); }
-      .grid {
-        margin-top: 10px;
-        border-top: 1px solid rgba(255,255,255,.10);
-        padding-top: 10px;
-      }
-      .row {
-        display:flex;
-        align-items:center;
-        justify-content:space-between;
-        gap: 10px;
-        padding: 8px 0;
-        border-bottom: 1px dashed rgba(255,255,255,.10);
-      }
-      .row:last-child { border-bottom: none; }
-      .k {
-        opacity: .78;
-        font-size: .82rem;
-      }
-      .v {
-        font-size: .92rem;
-        font-weight: 800;
-        text-align: right;
-        max-width: 62%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .descbox {
-        margin-top: 10px;
-        padding: 10px 12px;
-        border-radius: 12px;
-        background: rgba(255,255,255,.06);
-        border: 1px solid rgba(255,255,255,.10);
-      }
-      .descbox .h {
-        font-size: .78rem;
-        opacity: .75;
-        font-weight: 900;
-        margin-bottom: 6px;
-      }
-      .timeline {
-        margin-top: 10px;
-        padding-left: 0;
-        list-style: none;
-      }
-      .timeline li {
-        padding: 10px 10px 10px 12px;
-        border-left: 3px solid rgba(255,255,255,.16);
-        margin: 8px 0;
-        background: rgba(255,255,255,.04);
-        border-radius: 12px;
-      }
-      .timeline .t {
-        font-size: .82rem;
-        opacity: .82;
-        margin-bottom: 4px;
-      }
-      .timeline .a {
-        font-size: .92rem;
-        font-weight: 900;
-      }
-      .muted {
-        opacity:.75;
-        font-size:.85rem;
-      }
-      .resumo-wrap {
-        display:flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        margin: 6px 0 10px 0;
-      }
-      .pill {
-        border: 1px solid rgba(255,255,255,.14);
-        background: rgba(255,255,255,.05);
-        border-radius: 999px;
-        padding: 6px 10px;
-        font-weight: 900;
-        font-size: .78rem;
-      }
-    </style>
-    """, unsafe_allow_html=True)
+def render_comprovante_demanda(d: dict):
+    """Renderiza uma demanda como um comprovante estilizado"""
+    
+    # Configurar cores baseadas no status
+    cor_status = CORES_STATUS.get(d.get("status", "Pendente"), "#FF6B6B")
+    cor_prioridade = CORES_PRIORIDADE.get(d.get("prioridade", "Média"), "#FFD166")
+    
+    # Cabeçalho do comprovante
+    with st.container():
+        # Cabeçalho principal com borda colorida por status
+        st.markdown(f"""
+        <div style="
+            border-left: 8px solid {cor_status};
+            background: linear-gradient(90deg, #f8f9fa, #ffffff);
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        ">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h3 style="margin: 0; color: #2c3e50; font-size: 1.4rem;">
+                        📋 Comprovante de Demanda
+                    </h3>
+                    <p style="margin: 5px 0 0 0; color: #7f8c8d; font-size: 0.9rem;">
+                        Código: <strong>{d.get('codigo', 'SEM-COD')}</strong> | 
+                        Criado em: {d.get('data_criacao_formatada', '')}
+                    </p>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <div style="
+                        background-color: {cor_status};
+                        color: white;
+                        padding: 5px 15px;
+                        border-radius: 20px;
+                        font-weight: bold;
+                        font-size: 0.9rem;
+                    ">
+                        {d.get('status', 'Pendente')}
+                    </div>
+                    <div style="
+                        background-color: {cor_prioridade};
+                        color: #333;
+                        padding: 5px 15px;
+                        border-radius: 20px;
+                        font-weight: bold;
+                        font-size: 0.9rem;
+                    ">
+                        {d.get('prioridade', 'Média')}
+                    </div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Seção de "Extrato" - campos à esquerda, valores à direita
+    with st.container():
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.markdown("### 📄 Extrato da Demanda")
+            
+            # Grid de informações em formato de extrato
+            info_grid = [
+                ("**Solicitante**", d.get("solicitante", "")),
+                ("**Departamento**", d.get("departamento", "")),
+                ("**Local**", d.get("local", "Gerência")),
+                ("**Categoria**", d.get("categoria", "Geral")),
+                ("**Quantidade**", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
+                ("**Estimativa**", f"{d.get('estimativa_horas', 0) or 0:.1f} horas" if d.get("estimativa_horas") else "Não informada"),
+                ("**Urgente**", "✅ Sim" if d.get("urgencia") else "❌ Não"),
+            ]
+            
+            for label, value in info_grid:
+                st.markdown(f"""
+                <div style="
+                    display: flex;
+                    justify-content: space-between;
+                    padding: 8px 0;
+                    border-bottom: 1px solid #eee;
+                ">
+                    <span style="color: #555;">{label}</span>
+                    <span style="font-weight: bold; color: #2c3e50;">{value}</span>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        with col2:
+            # Botão para copiar código
+            st.markdown("### 🔗 Ações")
+            codigo = d.get('codigo', '')
+            if st.button("📋 Copiar Código", key=f"copy_{codigo}", use_container_width=True):
+                st.session_state.copied_code = codigo
+                st.toast(f"Código {codigo} copiado!", icon="📋")
+                time.sleep(0.5)
+                st.rerun()
+            
+            # Seção de observações
+            st.markdown("### 💬 Observações")
+            obs = d.get("observacoes", "Sem observações.")
+            st.markdown(f"""
+            <div style="
+                background-color: #f8f9fa;
+                padding: 15px;
+                border-radius: 8px;
+                border-left: 4px solid #3498db;
+                font-size: 0.95rem;
+                line-height: 1.5;
+                color: #555;
+            ">
+                {obs if obs else "Sem observações registradas."}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Descrição completa
+            st.markdown("### 📝 Descrição Completa")
+            item_desc = d.get("item", "")
+            st.markdown(f"""
+            <div style="
+                background-color: #fff;
+                padding: 15px;
+                border-radius: 8px;
+                border: 1px solid #e0e0e0;
+                font-size: 0.95rem;
+                line-height: 1.5;
+                color: #333;
+            ">
+                {item_desc}
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Timeline do histórico
+    st.markdown("---")
+    st.markdown("### 📅 Histórico da Demanda")
+    hist = carregar_historico_demanda(int(d["id"]))
+    
+    if not hist:
+        st.info("📭 Sem histórico registrado ainda.")
+    else:
+        for i, h in enumerate(hist):
+            data_formatada = h.get('data_acao_formatada', '')
+            usuario = h.get('usuario', '')
+            acao = h.get('acao', '')
+            
+            # Cor baseada na ação
+            if "CRIAÇÃO" in acao:
+                cor_acao = "#2ecc71"
+                icone = "🆕"
+            elif "ATUALIZAÇÃO" in acao:
+                cor_acao = "#3498db"
+                icone = "✏️"
+            elif "EXCLUSÃO" in acao:
+                cor_acao = "#e74c3c"
+                icone = "🗑️"
+            else:
+                cor_acao = "#95a5a6"
+                icone = "📝"
+            
+            st.markdown(f"""
+            <div style="
+                display: flex;
+                align-items: flex-start;
+                margin-bottom: 15px;
+                padding: 10px;
+                background: white;
+                border-radius: 8px;
+                border-left: 4px solid {cor_acao};
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            ">
+                <div style="margin-right: 15px; font-size: 1.2rem;">
+                    {icone}
+                </div>
+                <div style="flex: 1;">
+                    <div style="font-weight: bold; color: {cor_acao};">
+                        {acao}
+                    </div>
+                    <div style="color: #7f8c8d; font-size: 0.9rem;">
+                        Por: {usuario} | {data_formatada}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Detalhes expandíveis
+            detalhes = h.get("detalhes")
+            if detalhes:
+                with st.expander("🔍 Ver detalhes", expanded=False):
+                    st.json(detalhes)
+    
+    st.markdown("---")
 
 def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
-    _inject_css_extrato()
+    """Renderiza resultados com o novo design de comprovante"""
     st.subheader(titulo)
-
+    
     if not demandas:
-        st.info("Nada encontrado.")
+        st.info("📭 Nenhuma demanda encontrada.")
         return
-
+    
     # Resumo do extrato no topo
-    total = len(demandas)
-    urgentes = sum(1 for d in demandas if bool(d.get("urgencia")))
-    pend = sum(1 for d in demandas if (d.get("status") or "").lower().startswith("pend"))
-    andamento = sum(1 for d in demandas if "andamento" in (d.get("status") or "").lower())
-    concl = sum(1 for d in demandas if "conclu" in (d.get("status") or "").lower())
-
-    st.markdown(
-        textwrap.dedent(f"""
-        <div class="resumo-wrap">
-          <div class="pill">📌 Total: {total}</div>
-          <div class="pill">🚨 Urgentes: {urgentes}</div>
-          <div class="pill">🟡 Pendentes: {pend}</div>
-          <div class="pill">🔵 Em andamento: {andamento}</div>
-          <div class="pill">🟢 Concluídas: {concl}</div>
-        </div>
-        """),
-        unsafe_allow_html=True
-    )
-
+    total_itens = sum(d.get("quantidade", 0) for d in demandas)
+    total_urgentes = sum(1 for d in demandas if d.get("urgencia"))
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📋 Total de Demandas", len(demandas))
+    with col2:
+        st.metric("📦 Total de Itens", total_itens)
+    with col3:
+        st.metric("⚠️ Urgentes", total_urgentes)
+    
+    st.caption("🔍 Clique nos comprovantes abaixo para expandir e ver todos os detalhes")
+    
+    # Renderizar cada demanda como comprovante
     for d in demandas:
-        codigo = d.get("codigo") or "SEM-COD"
-        status = d.get("status") or ""
-        prioridade = d.get("prioridade") or ""
-        solicitante = d.get("solicitante") or ""
-        item = (d.get("item") or "").strip()
-        item_curto = item if len(item) <= 70 else item[:70] + "..."
-
-        dept = d.get("departamento","")
-        local = d.get("local","")
-        cat = d.get("categoria","")
-        un = d.get("unidade","")
-        qtd = int(d.get("quantidade") or 0)
-        criado = d.get("data_criacao_formatada","")
-        atualizado = d.get("data_atualizacao_formatada","")
-        urg = "Sim" if bool(d.get("urgencia")) else "Não"
-        horas = d.get("estimativa_horas")
-        horas_txt = f"{float(horas):.1f}h" if horas not in (None, "") else ""
-
-        status_kind = _status_kind(status)
-        prioridade_kind = _prioridade_kind(prioridade)
-
-        label = f"📌 {codigo} | {status} | {prioridade} | {solicitante} | {item_curto}"
-
-        with st.expander(label, expanded=False):
-            header_html = textwrap.dedent(f"""
-              <div class="cardx status-{status_kind}">
-                <div class="top">
-                  <div>
-                    <p class="title">{html.escape(codigo)} • {html.escape(item_curto)}</p>
-                    <div class="sub">Solicitante: <b>{html.escape(solicitante)}</b></div>
-                  </div>
-                  <div class="tags">
-                    {_badge(status, status_kind)}
-                    {_badge(prioridade, prioridade_kind)}
-                    {_badge(f"Qtd {qtd}", "neutral")}
-                    {_badge(f"Urgente: {urg}", "danger" if urg == "Sim" else "neutral")}
-                  </div>
-                </div>
-              </div>
-            """)
-            st.markdown(header_html, unsafe_allow_html=True)
-
-            # Botão "Copiar código" (Streamlit já oferece copiar no st.code)
-            c1, c2 = st.columns([1, 3])
-            with c1:
-                st.code(codigo)  # tem botão de copiar nativo
-            with c2:
-                st.caption("Dica: clique no ícone de copiar no bloco do código.")
-
-            extrato = "<div class='cardx'><div class='grid'>"
-            extrato += _extrato_linha("Departamento", str(dept or ""))
-            extrato += _extrato_linha("Local", str(local or ""))
-            extrato += _extrato_linha("Categoria", str(cat or ""))
-            extrato += _extrato_linha("Unidade", str(un or ""))
-            extrato += _extrato_linha("Criado em", str(criado or ""))
-            extrato += _extrato_linha("Atualizado em", str(atualizado or ""))
-            if horas_txt:
-                extrato += _extrato_linha("Estimativa", horas_txt)
-            extrato += "</div></div>"
-            st.markdown(extrato, unsafe_allow_html=True)
-
-            st.markdown(textwrap.dedent(f"""
-              <div class="descbox">
-                <div class="h">Descrição</div>
-                <div>{html.escape(item) if item else "Sem descrição."}</div>
-              </div>
-            """), unsafe_allow_html=True)
-
-            obs = d.get("observacoes") or ""
-            st.markdown(textwrap.dedent(f"""
-              <div class="descbox">
-                <div class="h">Observações</div>
-                <div>{html.escape(obs) if obs else "<span class='muted'>Sem observações.</span>"}</div>
-              </div>
-            """), unsafe_allow_html=True)
-
-            st.markdown("<div class='cardx'><b>Histórico</b></div>", unsafe_allow_html=True)
-            hist = carregar_historico_demanda(int(d["id"]))
-            if not hist:
-                st.info("Sem histórico registrado ainda.")
-            else:
-                tl = ["<ul class='timeline'>"]
-                for h in hist:
-                    datah = h.get("data_acao_formatada","")
-                    acao = h.get("acao","")
-                    usuario = h.get("usuario","")
-                    tl.append(f"<li><div class='t'>{html.escape(datah)} • {html.escape(usuario)}</div><div class='a'>{html.escape(acao)}</div></li>")
-                tl.append("</ul>")
-                st.markdown("".join(tl), unsafe_allow_html=True)
+        with st.expander(
+            f"📋 {d.get('codigo', 'SEM-COD')} | 👤 {d.get('solicitante', '')} | 📍 {d.get('local', '')} | 🏷️ {d.get('status', '')}",
+            expanded=False
+        ):
+            render_comprovante_demanda(d)
 
 # =============================
 # Páginas
@@ -1019,42 +969,96 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados"):
 def pagina_inicial():
     agora = agora_fortaleza()
     st.sidebar.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
-    st.title("🚂 Sistema de Demandas - Railway")
-    st.markdown("---")
-
+    
+    # Header com gradiente
+    st.markdown("""
+    <div style="
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 40px 30px;
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 30px;
+    ">
+        <h1 style="margin: 0; font-size: 2.5rem;">🚂 Sistema de Demandas GRBANABUIU</h1>
+        <p style="margin: 10px 0 0 0; font-size: 1.1rem; opacity: 0.9;">
+            Gestão completa de solicitações e comprovantes
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
     col1, col2 = st.columns(2)
+    
     with col1:
-        st.subheader("📝 Solicitação e Consulta")
-        st.markdown("Envie uma nova demanda e consulte depois usando nome ou código.")
-        if st.button("📄 Acessar Solicitação", type="primary", use_container_width=True):
+        st.markdown("""
+        <div style="
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            border-left: 6px solid #3498db;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            height: 100%;
+        ">
+            <h3 style="color: #2c3e50; margin-top: 0;">📝 Solicitação e Consulta</h3>
+            <p style="color: #555; line-height: 1.6;">
+                Envie uma nova demanda e consulte depois usando nome ou código.
+                Cada demanda gera um <strong>comprovante digital</strong> com histórico completo.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("📄 Acessar Solicitação", type="primary", use_container_width=True, key="btn_solicitacao"):
             st.session_state.pagina_atual = "solicitacao"
             st.rerun()
-
+    
     with col2:
-        st.subheader("🔧 Área Administrativa")
-        st.markdown("Acesso para supervisores e administradores. Área administrativa com acesso controlado.")
-        if st.button("🔐 Entrar como Admin", use_container_width=True):
+        st.markdown("""
+        <div style="
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            border-left: 6px solid #9b59b6;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            height: 100%;
+        ">
+            <h3 style="color: #2c3e50; margin-top: 0;">🔧 Área Administrativa</h3>
+            <p style="color: #555; line-height: 1.6;">
+                Acesso para supervisores e administradores. 
+                Gestão completa de demandas, usuários e relatórios.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("🔐 Entrar como Admin", use_container_width=True, key="btn_admin"):
             st.session_state.pagina_atual = "login_admin"
             st.rerun()
-
+    
+    # Rodapé
     st.markdown("---")
-    st.caption(f"🕒 Agora: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Fortaleza)")
+    st.caption(f"🕒 Horário atual do sistema: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Fortaleza)")
 
 def pagina_solicitacao():
-    st.header("📝 Solicitação")
+    """Página de solicitação com formulário no topo e consulta na parte inferior"""
+    st.header("📝 Solicitação e Consulta")
     agora = agora_fortaleza()
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
-
+    
     if "solicitacao_enviada" not in st.session_state:
         st.session_state.solicitacao_enviada = False
     if "ultima_demanda_codigo" not in st.session_state:
         st.session_state.ultima_demanda_codigo = None
-
-    # CONFIRMAÇÃO DE ENVIO
+    
+    # CONFIRMAÇÃO DE ENVIO (se houver)
     if st.session_state.solicitacao_enviada:
-        st.success(f"✅ Solicitação enviada. Código: {st.session_state.ultima_demanda_codigo}")
+        st.success(f"""
+        ✅ **Solicitação enviada com sucesso!** 
+        
+        **Código da demanda:** `{st.session_state.ultima_demanda_codigo}`
+        
+        Guarde este código para consultar o status posteriormente.
+        """)
+        
         st.balloons()
-
+        
         col1, col2 = st.columns(2)
         with col1:
             if st.button("📝 Enviar nova solicitação", use_container_width=True):
@@ -1067,92 +1071,120 @@ def pagina_solicitacao():
                 st.session_state.solicitacao_enviada = False
                 st.session_state.ultima_demanda_codigo = None
                 st.rerun()
+        
+        # Mostrar o comprovante da demanda recém-criada
+        st.markdown("---")
+        st.subheader("📋 Comprovante da Demanda Enviada")
+        
+        # Buscar a demanda recém-criada
+        filtros = {"codigo": st.session_state.ultima_demanda_codigo}
+        resultado = carregar_demandas(filtros)
+        if resultado:
+            render_comprovante_demanda(resultado[0])
+        
         return
+    
+    # FORMULÁRIO DE ENVIO (PARTE SUPERIOR)
+    with st.container():
+        st.markdown("### 📝 Nova Solicitação")
+        with st.form("form_nova_demanda", clear_on_submit=True):
+            col1, col2 = st.columns(2)
 
-    # FORMULÁRIO DE ENVIO (consulta vai ficar abaixo)
-    st.subheader("📮 Enviar nova demanda")
-    with st.form("form_nova_demanda", clear_on_submit=True):
-        col1, col2 = st.columns(2)
+            with col1:
+                solicitante = st.text_input("👤 Nome do Solicitante*", placeholder="Seu nome completo")
+                departamento = st.selectbox("🏢 Departamento*", 
+                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"])
+                local = st.selectbox("📍 Local*", 
+                    ["Selecione", "Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu", 
+                    "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"])
+                categoria = st.selectbox("📂 Categoria", 
+                    ["Selecione", "Alimentos", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"])
+                
+            with col2:
+                item = st.text_area("📝 Descrição da Demanda*", placeholder="Descreva detalhadamente o que está solicitando...", height=120)
+                quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
+                unidade = st.selectbox("📏 Unidade*", 
+                    ["Selecione", "Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"])
+                estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5, help="Tempo estimado para atendimento")
 
-        with col1:
-            solicitante = st.text_input("👤 Nome do Solicitante*")
-            departamento = st.selectbox("🏢 Departamento*", ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"])
-            local = st.selectbox(
-                "📍 Local*",
-                ["Selecione", "Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
-                 "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
-            )
-            categoria = st.selectbox("📂 Categoria", ["Selecione", "Alimentos", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"])
+            col3, col4 = st.columns(2)
+            with col3:
+                prioridade = st.selectbox("🚨 Prioridade", ["Baixa", "Média", "Alta", "Urgente"], index=1)
+                urgencia = st.checkbox("🚨 Marcar como URGENTE?", help="Demandas urgentes têm prioridade máxima")
 
-        with col2:
-            item = st.text_input("📝 Descrição da Demanda*")
-            quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
-            unidade = st.selectbox("📏 Unidade*", ["Selecione", "Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"])
-            estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5)
+            with col4:
+                observacoes = st.text_area("💬 Observações Adicionais", 
+                    placeholder="Informações adicionais, restrições, prazos especiais...", 
+                    height=100)
 
-        col3, col4 = st.columns(2)
-        with col3:
-            prioridade = st.selectbox("🚨 Prioridade", ["Baixa", "Média", "Alta", "Urgente"], index=1)
-            urgencia = st.checkbox("🚨 É urgente?")
+            submitted = st.form_submit_button("✅ Enviar Solicitação", type="primary", use_container_width=True)
 
-        with col4:
-            observacoes = st.text_area("💬 Observações Adicionais", height=100)
+            if submitted:
+                if solicitante and item and departamento and local and unidade:
+                    if departamento == "Selecione":
+                        st.error("⚠️ Selecione um departamento válido.")
+                    elif local == "Selecione":
+                        st.error("⚠️ Selecione um local válido.")
+                    elif unidade == "Selecione":
+                        st.error("⚠️ Selecione uma unidade válida.")
+                    else:
+                        nova_demanda = {
+                            "item": item,
+                            "quantidade": int(quantidade),
+                            "solicitante": solicitante.strip(),
+                            "departamento": departamento,
+                            "local": local,
+                            "prioridade": prioridade,
+                            "observacoes": observacoes,
+                            "categoria": categoria,
+                            "unidade": unidade,
+                            "urgencia": bool(urgencia),
+                            "estimativa_horas": float(estimativa_horas) if estimativa_horas and estimativa_horas > 0 else None
+                        }
 
-        submitted = st.form_submit_button("✅ Enviar Solicitação", type="primary")
-
-        if submitted:
-            if solicitante and item and departamento and local and unidade and departamento != "Selecione" and local != "Selecione" and unidade != "Selecione":
-                nova_demanda = {
-                    "item": item,
-                    "quantidade": int(quantidade),
-                    "solicitante": solicitante.strip(),
-                    "departamento": departamento,
-                    "local": local,
-                    "prioridade": prioridade,
-                    "observacoes": observacoes,
-                    "categoria": categoria if categoria != "Selecione" else "Geral",
-                    "unidade": unidade,
-                    "urgencia": bool(urgencia),
-                    "estimativa_horas": float(estimativa_horas) if estimativa_horas and estimativa_horas > 0 else None
-                }
-
-                res = adicionar_demanda(nova_demanda)
-                if res and res.get("codigo"):
-                    st.session_state.solicitacao_enviada = True
-                    st.session_state.ultima_demanda_codigo = res["codigo"]
-                    st.rerun()
+                        res = adicionar_demanda(nova_demanda)
+                        if res and res.get("codigo"):
+                            st.session_state.solicitacao_enviada = True
+                            st.session_state.ultima_demanda_codigo = res["codigo"]
+                            st.rerun()
+                        else:
+                            st.error("❌ Erro ao salvar a solicitação. Tente novamente.")
                 else:
-                    st.error("❌ Erro ao salvar a solicitação.")
-            else:
-                st.error("⚠️ Preencha todos os campos obrigatórios (*)")
-
+                    st.error("⚠️ Preencha todos os campos obrigatórios (*)")
+    
+    # CONSULTA DO USUÁRIO (PARTE INFERIOR - com comprovantes clicáveis)
     st.markdown("---")
+    st.markdown("### 🔎 Consultar Demandas")
+    st.caption("Busque por nome do solicitante ou código da demanda")
+    
+    with st.expander("🔍 Abrir painel de consulta", expanded=True):
+        colc1, colc2 = st.columns(2)
+        with colc1:
+            filtro_nome = st.text_input("Nome do solicitante", placeholder="Ex: João Silva", key="filtro_nome")
+        with colc2:
+            filtro_codigo = st.text_input("Código da demanda", placeholder="Ex: 141225-01", key="filtro_codigo")
 
-    # CONSULTA DO USUÁRIO (agora embaixo do formulário)
-    st.subheader("🔎 Consultar demandas")
-    st.caption("Consulta estilo extrato. Você pode buscar por nome do solicitante ou por código.")
-    colc1, colc2, colc3 = st.columns([2, 2, 1])
-    with colc1:
-        filtro_nome = st.text_input("Nome do solicitante", placeholder="Ex: Renaci", key="consulta_nome")
-    with colc2:
-        filtro_codigo = st.text_input("Código da demanda", placeholder="Ex: 141225-03", key="consulta_codigo")
-    with colc3:
-        btn_consultar = st.button("Buscar", type="secondary", use_container_width=True)
+        btn_consultar = st.button("🔍 Buscar Demandas", type="secondary", use_container_width=True)
 
-    if btn_consultar:
-        filtros = {}
-        if (filtro_nome or "").strip():
-            filtros["solicitante"] = filtro_nome.strip()
-        if (filtro_codigo or "").strip():
-            filtros["codigo"] = filtro_codigo.strip()
+        if btn_consultar:
+            filtros = {}
+            if filtro_nome.strip():
+                filtros["solicitante"] = filtro_nome.strip()
+            if filtro_codigo.strip():
+                filtros["codigo"] = filtro_codigo.strip()
 
-        if not filtros:
-            st.warning("Digite o nome do solicitante ou o código.")
+            if not filtros:
+                st.warning("⚠️ Digite o nome do solicitante ou o código para buscar.")
+            else:
+                resultados = carregar_demandas(filtros)
+                render_resultados_com_detalhes(resultados, "📋 Demandas Encontradas")
         else:
-            resultados = carregar_demandas(filtros)
-            render_resultados_com_detalhes(resultados, "📌 Extrato de demandas")
-
-    if st.button("← Voltar ao Início"):
+            # Mostrar últimas 5 demandas como exemplo
+            st.info("ℹ️ As últimas demandas aparecerão aqui após a busca.")
+    
+    # Botão de voltar
+    st.markdown("---")
+    if st.button("← Voltar ao Início", use_container_width=True):
         st.session_state.pagina_atual = "inicio"
         st.rerun()
 
@@ -1161,14 +1193,28 @@ def pagina_login_admin():
     st.markdown("---")
     agora = agora_fortaleza()
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
-    st.warning("🔒 Acesso restrito")
-
+    
+    st.markdown("""
+    <div style="
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        padding: 25px;
+        border-radius: 12px;
+        color: white;
+        margin-bottom: 25px;
+    ">
+        <h3 style="margin: 0; color: white;">🔒 Acesso Restrito</h3>
+        <p style="margin: 10px 0 0 0; opacity: 0.9;">
+            Esta área é exclusiva para administradores e supervisores autorizados.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("form_admin_login"):
-            username = st.text_input("👤 Username")
-            senha = st.text_input("🔑 Senha", type="password")
-            login_submit = st.form_submit_button("🔓 Entrar", type="primary")
+            username = st.text_input("👤 Username", placeholder="Seu username")
+            senha = st.text_input("🔑 Senha", type="password", placeholder="Sua senha")
+            login_submit = st.form_submit_button("🔓 Entrar na Área Admin", type="primary", use_container_width=True)
 
             if login_submit:
                 if username and senha:
@@ -1185,9 +1231,9 @@ def pagina_login_admin():
                     else:
                         st.error("❌ Credenciais inválidas ou usuário inativo.")
                 else:
-                    st.error("⚠️ Preencha tudo.")
+                    st.error("⚠️ Preencha todos os campos.")
 
-    if st.button("← Voltar ao Início"):
+    if st.button("← Voltar ao Início", use_container_width=True):
         st.session_state.pagina_atual = "inicio"
         st.rerun()
 
@@ -1200,70 +1246,90 @@ def pagina_gerenciar_usuarios():
         st.error("⛔ Apenas administradores.")
         return
 
-    tab1, tab2 = st.tabs(["📋 Lista", "➕ Novo"])
+    tab1, tab2 = st.tabs(["📋 Lista de Usuários", "➕ Novo Usuário"])
 
     with tab1:
         usuarios = listar_usuarios()
         if not usuarios:
-            st.info("Nenhum usuário.")
+            st.info("Nenhum usuário cadastrado.")
             return
 
+        # Converter para DataFrame para melhor visualização
         df = pd.DataFrame(usuarios)
         df["is_admin"] = df["is_admin"].apply(lambda x: "✅" if x else "❌")
         df["ativo"] = df["ativo"].apply(lambda x: "✅" if x else "❌")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        st.dataframe(
+            df[["id", "nome", "username", "departamento", "nivel_acesso", "is_admin", "ativo", "ultimo_login"]],
+            use_container_width=True,
+            hide_index=True
+        )
 
-        st.subheader("⚙️ Ações")
-        op = st.selectbox("Selecione", [f"{u['id']} - {u['nome']} ({u['username']})" for u in usuarios])
+        st.subheader("⚙️ Ações sobre Usuários")
+        op = st.selectbox("Selecione um usuário para gerenciar", 
+                         [f"{u['id']} - {u['nome']} ({u['username']})" for u in usuarios])
         usuario_id = int(op.split(" - ")[0])
         info = next((u for u in usuarios if u["id"] == usuario_id), None)
+        
         if not info:
             return
 
         col1, col2, col3 = st.columns(3)
         with col1:
+            st.markdown("**Nível de Acesso**")
             novo_nivel = st.selectbox(
                 "Nível",
                 ["usuario", "supervisor", "administrador"],
-                index=["usuario", "supervisor", "administrador"].index(info["nivel_acesso"])
+                index=["usuario", "supervisor", "administrador"].index(info["nivel_acesso"]),
+                key=f"nivel_{usuario_id}"
             )
-            if st.button("💾 Salvar nível"):
+            if st.button("💾 Salvar nível", key=f"save_nivel_{usuario_id}"):
                 ok, msg = atualizar_usuario(usuario_id, {"nivel_acesso": novo_nivel, "is_admin": (novo_nivel == "administrador")})
                 st.success(msg) if ok else st.error(msg)
+                st.rerun()
 
         with col2:
-            nova_senha = st.text_input("Nova senha", type="password")
-            if st.button("🔐 Trocar senha"):
+            st.markdown("**Alterar Senha**")
+            nova_senha = st.text_input("Nova senha", type="password", key=f"senha_{usuario_id}")
+            if st.button("🔐 Trocar senha", key=f"trocar_{usuario_id}"):
                 if not nova_senha:
-                    st.warning("Digite a senha.")
+                    st.warning("Digite a nova senha.")
                 else:
                     ok, msg = atualizar_usuario(usuario_id, {"senha": nova_senha})
                     st.success(msg) if ok else st.error(msg)
+                    st.rerun()
 
         with col3:
-            if st.button("⛔ Desativar usuário"):
+            st.markdown("**Status do Usuário**")
+            if st.button("⛔ Desativar usuário", key=f"desativar_{usuario_id}"):
                 ok, msg = desativar_usuario(usuario_id)
                 st.success(msg) if ok else st.error(msg)
+                st.rerun()
 
     with tab2:
+        st.markdown("### 👤 Cadastrar Novo Usuário")
         with st.form("form_novo_usuario"):
             col1, col2 = st.columns(2)
             with col1:
-                nome = st.text_input("Nome*")
-                email = st.text_input("Email*")
-                username = st.text_input("Username*")
+                nome = st.text_input("Nome Completo*")
+                email = st.text_input("Email*", placeholder="usuario@email.com")
+                username = st.text_input("Username*", placeholder="nome.usuario")
             with col2:
-                departamento = st.selectbox("Departamento", ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "TI", "RH", "Financeiro", "Outro"])
-                nivel_acesso = st.selectbox("Nível", ["usuario", "supervisor", "administrador"])
+                departamento = st.selectbox("Departamento", 
+                    ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "TI", "RH", "Financeiro", "Outro"])
+                nivel_acesso = st.selectbox("Nível de Acesso", ["usuario", "supervisor", "administrador"])
                 senha = st.text_input("Senha*", type="password")
-                confirmar = st.text_input("Confirmar*", type="password")
+                confirmar = st.text_input("Confirmar Senha*", type="password")
 
-            criar = st.form_submit_button("✅ Criar", type="primary")
+            criar = st.form_submit_button("✅ Criar Usuário", type="primary")
+
             if criar:
                 if not all([nome, email, username, senha, confirmar]):
-                    st.error("Preencha tudo.")
+                    st.error("⚠️ Preencha todos os campos obrigatórios (*).")
                 elif senha != confirmar:
-                    st.error("Senhas não batem.")
+                    st.error("❌ As senhas não coincidem.")
+                elif "@" not in email:
+                    st.error("❌ Email inválido.")
                 else:
                     ok, msg = criar_usuario({
                         "nome": nome,
@@ -1274,10 +1340,12 @@ def pagina_gerenciar_usuarios():
                         "nivel_acesso": nivel_acesso,
                         "is_admin": (nivel_acesso == "administrador")
                     })
-                    st.success(msg) if ok else st.error(msg)
                     if ok:
+                        st.success(f"✅ {msg}")
                         st.balloons()
                         st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
 
 def pagina_admin():
     if not st.session_state.get("usuario_logado", False):
@@ -1286,11 +1354,25 @@ def pagina_admin():
         return
 
     agora = agora_fortaleza()
+    
+    # Sidebar de navegação
+    st.sidebar.markdown(f"""
+    <div style="
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 20px;
+        border-radius: 10px;
+        color: white;
+        margin-bottom: 20px;
+    ">
+        <h3 style="margin: 0; font-size: 1.3rem;">🔧 Administração</h3>
+        <p style="margin: 5px 0 0 0; font-size: 0.9rem; opacity: 0.9;">
+        👤 {st.session_state.get('usuario_nome', 'Usuário')}<br>
+        🏷️ {st.session_state.get('usuario_nivel', 'usuario').title()}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
     st.sidebar.caption(f"🕒 {agora.strftime('%d/%m/%Y %H:%M')} (Fortaleza)")
-
-    st.sidebar.title("🔧 Administração")
-    st.sidebar.markdown(f"**👤 {st.session_state.get('usuario_nome', 'Usuário')}**")
-    st.sidebar.caption(f"Nível: {st.session_state.get('usuario_nivel', 'usuario').title()}")
     st.sidebar.markdown("---")
 
     usuario_nivel = st.session_state.get("usuario_nivel", "usuario")
@@ -1303,11 +1385,11 @@ def pagina_admin():
     menu_sel = st.sidebar.radio("Navegação", menu)
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🔎 Filtros")
+    st.sidebar.subheader("🔎 Filtros Rápidos")
     status_filtro = st.sidebar.multiselect(
         "Status",
         ["Pendente", "Em andamento", "Concluída", "Cancelada"],
-        default=["Pendente", "Em andamento", "Concluída", "Cancelada"]
+        default=["Pendente", "Em andamento"]
     )
     prioridade_filtro = st.sidebar.multiselect(
         "Prioridade",
@@ -1316,170 +1398,274 @@ def pagina_admin():
     )
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("🚪 Logout"):
+    if st.sidebar.button("🚪 Logout", use_container_width=True):
         for k in ["usuario_logado", "usuario_id", "usuario_nome", "usuario_username", "usuario_nivel", "usuario_admin"]:
             st.session_state.pop(k, None)
         st.session_state.pagina_atual = "inicio"
         st.rerun()
 
+    # Aplicar filtros
     filtros = {}
     if status_filtro:
         filtros["status"] = status_filtro
     if prioridade_filtro:
         filtros["prioridade"] = prioridade_filtro
 
+    # Título da página atual
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M:%S')}")
 
+    # Conteúdo baseado na seleção do menu
     if menu_sel == "🏠 Dashboard":
-        st.header("📊 Dashboard")
+        st.header("📊 Dashboard Administrativo")
         est = obter_estatisticas()
         if not est:
-            st.info("Sem dados.")
+            st.info("📭 Sem dados disponíveis.")
             return
+        
         totais = est.get("totais", {})
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total", totais.get("total", 0))
-        c2.metric("Pendentes", totais.get("pendentes", 0))
-        c3.metric("Urgentes", totais.get("urgentes", 0))
-        c4.metric("Total itens", totais.get("total_itens", 0))
-
-        st.subheader("📋 Últimas")
-        rec = carregar_demandas(filtros)[:10]
-        render_resultados_com_detalhes(rec, "Últimas demandas")
+        
+        # Métricas principais
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("📋 Total", totais.get("total", 0))
+        col2.metric("⏳ Pendentes", totais.get("pendentes", 0), 
+                   delta=f"+{totais.get('em_andamento', 0)} em andamento")
+        col3.metric("⚠️ Urgentes", totais.get("urgentes", 0))
+        col4.metric("📦 Total Itens", totais.get("total_itens", 0))
+        
+        # Últimas demandas
+        st.markdown("---")
+        st.subheader("📋 Últimas Demandas")
+        rec = carregar_demandas(filtros)[:15]
+        render_resultados_com_detalhes(rec, "Últimas 15 demandas")
 
     elif menu_sel == "📋 Todas as Demandas":
         st.header("📋 Todas as Demandas")
-        busca = st.text_input("🔎 Buscar por item, solicitante ou código", placeholder="Ex: Maria ou 141225-01")
-        if busca.strip():
+        
+        # Barra de busca
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            busca = st.text_input("🔎 Buscar por item, solicitante ou código", 
+                                 placeholder="Ex: 'material' ou '141225-01' ou 'Maria'")
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("🔍 Buscar", use_container_width=True):
+                if busca.strip():
+                    filtros["search"] = busca.strip()
+        
+        if busca.strip() and "search" not in filtros:
             filtros["search"] = busca.strip()
-
+        
         dados = carregar_demandas(filtros)
-        render_resultados_com_detalhes(dados, "Extrato completo")
+        render_resultados_com_detalhes(dados, "Resultados da Busca")
 
     elif menu_sel == "✏️ Editar Demanda":
         if usuario_nivel not in ["supervisor", "administrador"]:
-            st.error("⛔ Apenas supervisor/admin.")
+            st.error("⛔ Apenas supervisores e administradores podem editar demandas.")
             return
 
         st.header("✏️ Editar Demanda")
+        
+        # Busca para edição
         todas = carregar_demandas()
         if not todas:
-            st.info("Sem demandas.")
+            st.info("📭 Nenhuma demanda cadastrada.")
             return
 
-        opcoes = [f"{d.get('codigo','SEM-COD')} | id {d['id']} | {d['item'][:50]}" for d in todas]
-        escolha = st.selectbox("Selecione", opcoes)
-
-        demanda_id = int(escolha.split("|")[1].strip().replace("id", "").strip())
-        atual = next((d for d in todas if d["id"] == demanda_id), None)
-        if not atual:
-            st.info("Demanda não encontrada.")
-            return
-
-        st.caption(f"Código: {atual.get('codigo','')}")
-        st.caption(f"Criado: {atual.get('data_criacao_formatada','')}")
-        st.caption(f"Atualizado: {atual.get('data_atualizacao_formatada','')}")
-
-        departamentos_lista = ["TI", "RH", "Financeiro", "Comercial", "Operações", "Marketing", "Suporte", "Vendas", "Desenvolvimento", "Outro"]
-        locais_lista = ["Gerência", "Fogareiro", "Quixeramobim", "Outro"]
-        unidades_lista = ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
-        status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
-        prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
-
-        dep_index = departamentos_lista.index(atual["departamento"]) if atual["departamento"] in departamentos_lista else len(departamentos_lista) - 1
-        loc_index = locais_lista.index(atual.get("local", "Gerência")) if atual.get("local", "Gerência") in locais_lista else 0
-        uni_index = unidades_lista.index(atual.get("unidade", "Unid.")) if atual.get("unidade", "Unid.") in unidades_lista else 2
-        pri_index = prioridade_lista.index(atual["prioridade"]) if atual["prioridade"] in prioridade_lista else 1
-        st_index = status_lista.index(atual["status"]) if atual["status"] in status_lista else 0
-
-        with st.form(f"form_editar_{demanda_id}"):
-            col1, col2 = st.columns(2)
-            with col1:
-                item_edit = st.text_area("Descrição", value=atual["item"], height=100)
-                quantidade_edit = st.number_input("Quantidade", min_value=1, value=int(atual["quantidade"]))
-                solicitante_edit = st.text_input("Solicitante", value=atual["solicitante"])
-                departamento_edit = st.selectbox("Departamento", departamentos_lista, index=dep_index)
-                local_edit = st.selectbox("Local", locais_lista, index=loc_index)
-
-            with col2:
-                prioridade_edit = st.selectbox("Prioridade", prioridade_lista, index=pri_index)
-                status_edit = st.selectbox("Status", status_lista, index=st_index)
-                categoria_edit = st.text_input("Categoria", value=atual.get("categoria") or "Geral")
-                unidade_edit = st.selectbox("Unidade", unidades_lista, index=uni_index)
-                urgencia_edit = st.checkbox("Urgente", value=bool(atual.get("urgencia", False)))
-                observacoes_edit = st.text_area("Observações", value=atual.get("observacoes") or "", height=100)
-
-            c1, c2, c3 = st.columns(3)
-            salvar = c1.form_submit_button("💾 Salvar", type="primary")
-            excluir = c2.form_submit_button("🗑️ Excluir") if usuario_admin else False
-            cancelar = c3.form_submit_button("↻ Cancelar")
-
-            if salvar:
-                ok = atualizar_demanda(demanda_id, {
-                    "item": item_edit,
-                    "quantidade": int(quantidade_edit),
-                    "solicitante": solicitante_edit,
-                    "departamento": departamento_edit,
-                    "local": local_edit,
-                    "prioridade": prioridade_edit,
-                    "status": status_edit,
-                    "categoria": categoria_edit,
-                    "unidade": unidade_edit,
-                    "urgencia": bool(urgencia_edit),
-                    "observacoes": observacoes_edit,
-                    "estimativa_horas": atual.get("estimativa_horas"),
-                })
-                if ok:
-                    st.success("Atualizado.")
+        # Selecionar demanda para editar
+        opcoes = [f"{d.get('codigo','SEM-COD')} | {d['solicitante']} | {d['item'][:50]}..." for d in todas]
+        escolha = st.selectbox("Selecione uma demanda para editar", opcoes, index=0)
+        
+        if escolha:
+            # Extrair ID da demanda selecionada
+            codigo_selecionado = escolha.split("|")[0].strip()
+            demanda_id = next((d["id"] for d in todas if d.get("codigo") == codigo_selecionado), None)
+            
+            if not demanda_id:
+                st.error("Demanda não encontrada.")
+                return
+            
+            # Carregar dados atuais
+            demanda_atual = next((d for d in todas if d["id"] == demanda_id), None)
+            if not demanda_atual:
+                st.error("Erro ao carregar dados da demanda.")
+                return
+            
+            st.markdown(f"**Editando demanda:** `{demanda_atual.get('codigo', '')}`")
+            
+            # Formulário de edição
+            with st.form(f"form_editar_{demanda_id}"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    item_edit = st.text_area("📝 Descrição", value=demanda_atual["item"], height=100)
+                    quantidade_edit = st.number_input("🔢 Quantidade", min_value=1, value=int(demanda_atual["quantidade"]))
+                    solicitante_edit = st.text_input("👤 Solicitante", value=demanda_atual["solicitante"])
+                    
+                    # Listas atualizadas
+                    departamentos_lista = ["Administrativo", "Gestão", "Operação", "Açudes", "EB", "Outro"]
+                    locais_lista = ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu", 
+                                  "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
+                    
+                    dep_index = departamentos_lista.index(demanda_atual["departamento"]) if demanda_atual["departamento"] in departamentos_lista else 0
+                    local_edit = st.selectbox("📍 Local", locais_lista, 
+                                            index=locais_lista.index(demanda_atual.get("local", "Gerência")) if demanda_atual.get("local", "Gerência") in locais_lista else 0)
+                
+                with col2:
+                    prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
+                    status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
+                    
+                    pri_index = prioridade_lista.index(demanda_atual["prioridade"]) if demanda_atual["prioridade"] in prioridade_lista else 1
+                    st_index = status_lista.index(demanda_atual["status"]) if demanda_atual["status"] in status_lista else 0
+                    
+                    prioridade_edit = st.selectbox("🚨 Prioridade", prioridade_lista, index=pri_index)
+                    status_edit = st.selectbox("📊 Status", status_lista, index=st_index)
+                    
+                    unidades_lista = ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
+                    uni_index = unidades_lista.index(demanda_atual.get("unidade", "Unid.")) if demanda_atual.get("unidade", "Unid.") in unidades_lista else 2
+                    
+                    categoria_edit = st.text_input("📂 Categoria", value=demanda_atual.get("categoria") or "Geral")
+                    unidade_edit = st.selectbox("📏 Unidade", unidades_lista, index=uni_index)
+                    urgencia_edit = st.checkbox("🚨 Urgente", value=bool(demanda_atual.get("urgencia", False)))
+                    observacoes_edit = st.text_area("💬 Observações", value=demanda_atual.get("observacoes") or "", height=100)
+                
+                # Botões de ação
+                col_b1, col_b2, col_b3 = st.columns(3)
+                salvar = col_b1.form_submit_button("💾 Salvar Alterações", type="primary")
+                excluir = col_b2.form_submit_button("🗑️ Excluir Demanda") if usuario_admin else False
+                cancelar = col_b3.form_submit_button("↻ Cancelar")
+                
+                if salvar:
+                    ok = atualizar_demanda(demanda_id, {
+                        "item": item_edit,
+                        "quantidade": int(quantidade_edit),
+                        "solicitante": solicitante_edit,
+                        "departamento": demanda_atual["departamento"],  # Mantém o departamento original
+                        "local": local_edit,
+                        "prioridade": prioridade_edit,
+                        "status": status_edit,
+                        "categoria": categoria_edit,
+                        "unidade": unidade_edit,
+                        "urgencia": bool(urgencia_edit),
+                        "observacoes": observacoes_edit,
+                        "estimativa_horas": demanda_atual.get("estimativa_horas"),
+                    })
+                    if ok:
+                        st.success("✅ Demanda atualizada com sucesso!")
+                        st.rerun()
+                
+                if excluir and usuario_admin:
+                    if st.warning("⚠️ Tem certeza que deseja excluir esta demanda? Esta ação não pode ser desfeita."):
+                        if excluir_demanda(demanda_id):
+                            st.warning("🗑️ Demanda excluída.")
+                            st.rerun()
+                
+                if cancelar:
                     st.rerun()
-
-            if excluir and usuario_admin:
-                if excluir_demanda(demanda_id):
-                    st.warning("Excluída.")
-                    st.rerun()
-
-            if cancelar:
-                st.rerun()
 
     elif menu_sel == "👥 Gerenciar Usuários":
         pagina_gerenciar_usuarios()
 
     elif menu_sel == "📊 Estatísticas":
-        st.header("📊 Estatísticas")
+        st.header("📊 Estatísticas Avançadas")
         est = obter_estatisticas()
+        
         if not est:
-            st.info("Sem dados.")
+            st.info("📭 Sem dados disponíveis para análise.")
             return
+        
         totais = est.get("totais", {})
-        st.metric("Total de horas estimadas", f"{float(totais.get('total_horas', 0) or 0):.1f}h")
-
+        
+        # Métricas principais
+        st.metric("⏱️ Total de horas estimadas", f"{float(totais.get('total_horas', 0) or 0):.1f}h")
+        
         col1, col2 = st.columns(2)
+        
         with col1:
             if est.get("por_status"):
-                df = pd.DataFrame(list(est["por_status"].items()), columns=["Status", "Qtd"])
-                st.bar_chart(df.set_index("Status"))
+                st.subheader("📈 Distribuição por Status")
+                df_status = pd.DataFrame(list(est["por_status"].items()), columns=["Status", "Quantidade"])
+                
+                # Adicionar cores
+                df_status["Cor"] = df_status["Status"].map(CORES_STATUS)
+                
+                # Mostrar gráfico
+                st.bar_chart(df_status.set_index("Status")["Quantidade"], use_container_width=True)
+                
+                # Mostrar tabela
+                st.dataframe(df_status, hide_index=True, use_container_width=True)
+        
         with col2:
-            st.info("Se quiser, eu coloco a série temporal aqui também como card e gráfico.")
+            if est.get("por_prioridade"):
+                st.subheader("🚨 Distribuição por Prioridade")
+                df_prioridade = pd.DataFrame(list(est["por_prioridade"].items()), columns=["Prioridade", "Quantidade"])
+                
+                # Ordenar por prioridade
+                ordem_prioridade = ["Urgente", "Alta", "Média", "Baixa"]
+                df_prioridade["Ordem"] = df_prioridade["Prioridade"].apply(lambda x: ordem_prioridade.index(x) if x in ordem_prioridade else 99)
+                df_prioridade = df_prioridade.sort_values("Ordem")
+                
+                # Adicionar cores
+                df_prioridade["Cor"] = df_prioridade["Prioridade"].map(CORES_PRIORIDADE)
+                
+                # Mostrar gráfico
+                st.bar_chart(df_prioridade.set_index("Prioridade")["Quantidade"], use_container_width=True)
+                
+                # Mostrar tabela
+                st.dataframe(df_prioridade[["Prioridade", "Quantidade"]], hide_index=True, use_container_width=True)
+        
+        # Estatísticas por departamento
+        if est.get("por_departamento"):
+            st.markdown("---")
+            st.subheader("🏢 Demandas por Departamento")
+            df_depto = pd.DataFrame(list(est["por_departamento"].items()), columns=["Departamento", "Quantidade"])
+            df_depto = df_depto.sort_values("Quantidade", ascending=False)
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.bar_chart(df_depto.set_index("Departamento")["Quantidade"], use_container_width=True)
+            with col2:
+                st.dataframe(df_depto, hide_index=True, use_container_width=True)
 
     elif menu_sel == "⚙️ Configurações":
-        st.header("⚙️ Configurações")
+        st.header("⚙️ Configurações do Sistema")
+        
+        # Informações da conexão
+        st.subheader("🔌 Conexão com Banco de Dados")
         cfg = get_db_config()
-        st.code(
-            f"Host: {cfg.get('host')}\n"
-            f"Database: {cfg.get('database')}\n"
-            f"User: {cfg.get('user')}\n"
-            f"Port: {cfg.get('port')}\n"
-            f"SSL: {cfg.get('sslmode')}\n"
-            f"Timezone: America/Fortaleza"
-        )
-
-        if st.button("🔄 Testar conexão"):
-            ok, msg = test_db_connection()
-            st.success(msg) if ok else st.error(msg)
+        
+        st.code(f"""
+Host: {cfg.get('host')}
+Database: {cfg.get('database')}
+User: {cfg.get('user')}
+Port: {cfg.get('port')}
+SSL Mode: {cfg.get('sslmode')}
+Timezone: America/Fortaleza
+        """, language="bash")
+        
+        # Teste de conexão
+        if st.button("🔄 Testar Conexão com Banco de Dados", use_container_width=True):
+            with st.spinner("Testando conexão..."):
+                ok, msg = test_db_connection()
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+        
+        # Informações do sistema
+        st.markdown("---")
+        st.subheader("📊 Informações do Sistema")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Versão do Sistema", "3.0")
+            st.metric("Fuso Horário", "America/Fortaleza")
+        with col2:
+            st.metric("Design", "Comprovante Digital")
+            st.metric("Usuários Online", "1")
 
 # =============================
-# Boot
+# Boot do sistema
 # =============================
 if "init_complete" not in st.session_state:
     ok, msg = test_db_connection()
@@ -1500,7 +1686,7 @@ if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = False
 
 # =============================
-# Rotas
+# Rotas do sistema
 # =============================
 if st.session_state.pagina_atual == "inicio":
     pagina_inicial()
@@ -1515,13 +1701,13 @@ else:
     st.rerun()
 
 # =============================
-# Rodapé e debug
+# Rodapé e informações de debug
 # =============================
 if st.session_state.pagina_atual in ["admin", "solicitacao"]:
     st.sidebar.markdown("---")
     if DATABASE_URL:
         st.sidebar.success("✅ Conectado ao Railway Postgres")
-        if st.sidebar.checkbox("Mostrar debug"):
+        if st.sidebar.checkbox("Mostrar informações técnicas", key="debug_info"):
             cfg = get_db_config()
             st.sidebar.text(f"Host: {cfg.get('host')}")
             st.sidebar.text(f"Database: {cfg.get('database')}")
@@ -1531,4 +1717,5 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
     else:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas v2.3")
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas GRBANABUIU v3.0")
