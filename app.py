@@ -305,7 +305,7 @@ def init_database():
                         estimativa_horas DECIMAL(5,2),
 
                         -- NOVOS CAMPOS (admin)
-                         BOOLEAN DEFAULT FALSE,
+                        almoxarifado BOOLEAN DEFAULT FALSE,
                         valor DECIMAL(12,2)
                     )
                 """)
@@ -489,36 +489,8 @@ def normalizar_busca_codigo(texto: str) -> str:
 # =============================
 # Demandas
 # =============================
-
-def verificar_e_adicionar_coluna_almoxarifado():
-    """Verifica se a coluna almoxarifado existe e a adiciona se necessário"""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Verificar se a coluna existe
-                cur.execute("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = 'demandas' 
-                    AND column_name = 'almoxarifado'
-                """)
-                
-                if not cur.fetchone():
-                    # Adicionar a coluna se não existir
-                    cur.execute("ALTER TABLE demandas ADD COLUMN almoxarifado BOOLEAN DEFAULT FALSE")
-                    conn.commit()
-                    st.success("Coluna 'almoxarifado' adicionada com sucesso!")
-                    return True
-                return False
-    except Exception as e:
-        st.error(f"Erro ao verificar/adicionar coluna almoxarifado: {str(e)}")
-        return False
-
 def carregar_demandas(filtros=None):
     try:
-        # Verificar se a coluna existe antes de carregar
-        verificar_e_adicionar_coluna_almoxarifado()
-        
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
@@ -577,9 +549,6 @@ def carregar_demandas(filtros=None):
                 for d in demandas:
                     d["data_criacao_formatada"] = formatar_data_hora_fortaleza(d.get("data_criacao"))
                     d["data_atualizacao_formatada"] = formatar_data_hora_fortaleza(d.get("data_atualizacao"))
-                    # Garantir que almoxarifado seja booleano
-                    if 'almoxarifado' in d:
-                        d["almoxarifado"] = bool(d["almoxarifado"])
 
                 return demandas
     except Exception as e:
@@ -607,9 +576,6 @@ def carregar_historico_demanda(demanda_id: int):
 
 def adicionar_demanda(dados):
     try:
-        # Verificar se a coluna existe
-        verificar_e_adicionar_coluna_almoxarifado()
-        
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
@@ -659,52 +625,36 @@ def adicionar_demanda(dados):
 
 def atualizar_demanda(demanda_id, dados):
     try:
-        # Verificar se a coluna existe
-        verificar_e_adicionar_coluna_almoxarifado()
-        
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
                 cur.execute("SELECT * FROM demandas WHERE id = %s", (demanda_id,))
                 antigo = cur.fetchone()
 
-                # Extrair apenas os campos editáveis dos dados recebidos
-                campos_permitidos = {
-                    'status': dados.get("status", antigo.get("status") if antigo else None),
-                    'almoxarifado': bool(dados.get("almoxarifado", antigo.get("almoxarifado", False) if antigo else False)),
-                    'valor': dados.get("valor", antigo.get("valor") if antigo else None),
-                    'observacoes': dados.get("observacoes", antigo.get("observacoes", "") if antigo else "")
-                }
-                
-                # Verificar se algum campo permitido foi alterado
-                campos_alterados = {}
-                if antigo:
-                    for campo, valor_novo in campos_permitidos.items():
-                        valor_antigo = antigo.get(campo)
-                        # Converter para string para comparação consistente
-                        if str(valor_novo) != str(valor_antigo):
-                            campos_alterados[campo] = {
-                                'antigo': valor_antigo,
-                                'novo': valor_novo
-                            }
-                
-                if not campos_alterados:
-                    return True  # Nenhuma alteração necessária
-
-                # Atualizar apenas os campos permitidos
                 cur.execute("""
                     UPDATE demandas
-                    SET status = %s,
-                        almoxarifado = %s,
-                        valor = %s,
-                        observacoes = %s,
+                    SET item = %s, quantidade = %s, solicitante = %s,
+                        departamento = %s, local = %s, prioridade = %s,
+                        observacoes = %s, status = %s, categoria = %s,
+                        unidade = %s, urgencia = %s, estimativa_horas = %s,
+                        almoxarifado = %s, valor = %s,
                         data_atualizacao = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (
-                    campos_permitidos['status'],
-                    campos_permitidos['almoxarifado'],
-                    campos_permitidos['valor'],
-                    campos_permitidos['observacoes'],
+                    dados["item"],
+                    dados["quantidade"],
+                    dados["solicitante"],
+                    dados["departamento"],
+                    dados.get("local", "Gerência"),
+                    dados["prioridade"],
+                    dados.get("observacoes", ""),
+                    dados["status"],
+                    dados.get("categoria", "Geral"),
+                    dados.get("unidade", "Unid."),
+                    dados.get("urgencia", False),
+                    dados.get("estimativa_horas"),
+                    bool(dados.get("almoxarifado", False)),
+                    dados.get("valor"),
                     demanda_id
                 ))
 
@@ -716,11 +666,7 @@ def atualizar_demanda(demanda_id, dados):
                     demanda_id,
                     usuario_atual,
                     "ATUALIZAÇÃO",
-                    dumps_safe({
-                        "campos_alterados": campos_alterados,
-                        "demanda_id": demanda_id,
-                        "comentario": "Apenas campos editáveis foram atualizados"
-                    })
+                    dumps_safe({"antigo": antigo or {}, "novo": dados})
                 ))
 
                 conn.commit()
@@ -757,9 +703,6 @@ def excluir_demanda(demanda_id):
 
 def obter_estatisticas():
     try:
-        # Verificar se a coluna existe
-        verificar_e_adicionar_coluna_almoxarifado()
-        
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
@@ -812,6 +755,7 @@ def obter_estatisticas():
     except Exception as e:
         st.error(f"Erro ao obter estatísticas: {str(e)}")
         return {}
+
 # =============================
 # UI helper: formatação BR simples
 # =============================
