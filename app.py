@@ -305,7 +305,7 @@ def init_database():
                         estimativa_horas DECIMAL(5,2),
 
                         -- NOVOS CAMPOS (admin)
-                        almoxarifado BOOLEAN DEFAULT FALSE,
+                         BOOLEAN DEFAULT FALSE,
                         valor DECIMAL(12,2)
                     )
                 """)
@@ -631,30 +631,43 @@ def atualizar_demanda(demanda_id, dados):
                 cur.execute("SELECT * FROM demandas WHERE id = %s", (demanda_id,))
                 antigo = cur.fetchone()
 
+                # Extrair apenas os campos editáveis dos dados recebidos
+                campos_permitidos = {
+                    'status': dados.get("status", antigo.get("status") if antigo else None),
+                    'almoxarifado': bool(dados.get("almoxarifado", antigo.get("almoxarifado", False) if antigo else False)),
+                    'valor': dados.get("valor", antigo.get("valor") if antigo else None),
+                    'observacoes': dados.get("observacoes", antigo.get("observacoes", "") if antigo else "")
+                }
+                
+                # Verificar se algum campo permitido foi alterado
+                campos_alterados = {}
+                if antigo:
+                    for campo, valor_novo in campos_permitidos.items():
+                        valor_antigo = antigo.get(campo)
+                        # Converter para string para comparação consistente
+                        if str(valor_novo) != str(valor_antigo):
+                            campos_alterados[campo] = {
+                                'antigo': valor_antigo,
+                                'novo': valor_novo
+                            }
+                
+                if not campos_alterados:
+                    return True  # Nenhuma alteração necessária
+
+                # Atualizar apenas os campos permitidos
                 cur.execute("""
                     UPDATE demandas
-                    SET item = %s, quantidade = %s, solicitante = %s,
-                        departamento = %s, local = %s, prioridade = %s,
-                        observacoes = %s, status = %s, categoria = %s,
-                        unidade = %s, urgencia = %s, estimativa_horas = %s,
-                        almoxarifado = %s, valor = %s,
+                    SET status = %s,
+                        almoxarifado = %s,
+                        valor = %s,
+                        observacoes = %s,
                         data_atualizacao = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (
-                    dados["item"],
-                    dados["quantidade"],
-                    dados["solicitante"],
-                    dados["departamento"],
-                    dados.get("local", "Gerência"),
-                    dados["prioridade"],
-                    dados.get("observacoes", ""),
-                    dados["status"],
-                    dados.get("categoria", "Geral"),
-                    dados.get("unidade", "Unid."),
-                    dados.get("urgencia", False),
-                    dados.get("estimativa_horas"),
-                    bool(dados.get("almoxarifado", False)),
-                    dados.get("valor"),
+                    campos_permitidos['status'],
+                    campos_permitidos['almoxarifado'],
+                    campos_permitidos['valor'],
+                    campos_permitidos['observacoes'],
                     demanda_id
                 ))
 
@@ -666,7 +679,11 @@ def atualizar_demanda(demanda_id, dados):
                     demanda_id,
                     usuario_atual,
                     "ATUALIZAÇÃO",
-                    dumps_safe({"antigo": antigo or {}, "novo": dados})
+                    dumps_safe({
+                        "campos_alterados": campos_alterados,
+                        "demanda_id": demanda_id,
+                        "comentario": "Apenas campos editáveis foram atualizados"
+                    })
                 ))
 
                 conn.commit()
@@ -755,7 +772,6 @@ def obter_estatisticas():
     except Exception as e:
         st.error(f"Erro ao obter estatísticas: {str(e)}")
         return {}
-
 # =============================
 # UI helper: formatação BR simples
 # =============================
