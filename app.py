@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 import json
@@ -2093,4 +2092,3 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
 
     st.sidebar.markdown("---")
     st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.3")
-```
