@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import json
@@ -11,6 +12,8 @@ from urllib.parse import urlparse
 import hashlib
 import pytz
 import time
+import smtplib
+from email.message import EmailMessage
 
 # =============================
 # Configuração da página
@@ -71,6 +74,111 @@ CORES_PRIORIDADE = {
     "Média": "#FFD166",
     "Baixa": "#118AB2"
 }
+
+# =============================
+# Email (variáveis de ambiente)
+# =============================
+# Configure no Railway:
+# SMTP_HOST=mail.cogerh.com.br
+# SMTP_PORT=587
+# SMTP_USER=paulo.ferreira
+# SMTP_PASS=senha
+# SMTP_STARTTLS=true
+# MAIL_FROM=paulo.ferreira@cogerh.com.br
+# MAIL_TO=email1@dominio.com,email2@dominio.com
+# MAIL_CC=
+# MAIL_BCC=
+# MAIL_ON_NEW_DEMANDA=true
+# MAIL_SUBJECT_PREFIX=Sistema de Demandas GRBANABUIU
+# MAIL_SEND_TIMEOUT=15
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "sim", "on")
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, str(default))).strip())
+    except Exception:
+        return default
+
+def _env_list(name: str) -> list:
+    raw = os.environ.get(name, "") or ""
+    itens = [x.strip() for x in raw.replace(";", ",").split(",")]
+    return [x for x in itens if x]
+
+def get_email_config() -> dict:
+    return {
+        "enabled_new": _env_bool("MAIL_ON_NEW_DEMANDA", True),
+        "host": os.environ.get("SMTP_HOST", "").strip(),
+        "port": _env_int("SMTP_PORT", 587),
+        "user": os.environ.get("SMTP_USER", "").strip(),
+        "password": os.environ.get("SMTP_PASS", ""),
+        "starttls": _env_bool("SMTP_STARTTLS", True),
+        "from": (os.environ.get("MAIL_FROM") or os.environ.get("SMTP_USER") or "").strip(),
+        "to": _env_list("MAIL_TO"),
+        "cc": _env_list("MAIL_CC"),
+        "bcc": _env_list("MAIL_BCC"),
+        "subject_prefix": os.environ.get("MAIL_SUBJECT_PREFIX", "Sistema de Demandas").strip(),
+        "timeout": _env_int("MAIL_SEND_TIMEOUT", 15),
+    }
+
+def enviar_email_nova_demanda(dados_email: dict) -> tuple:
+    """
+    dados_email esperado:
+    codigo, solicitante, departamento, local, prioridade, item, quantidade, unidade, urgencia, categoria, observacoes
+    """
+    cfg = get_email_config()
+
+    if not cfg["enabled_new"]:
+        return True, "Envio de email desativado por variável"
+    if not cfg["host"] or not cfg["user"] or not cfg["password"]:
+        return False, "SMTP não configurado nas variáveis"
+    if not cfg["to"]:
+        return False, "MAIL_TO vazio"
+
+    codigo = dados_email.get("codigo", "SEM-COD")
+    assunto = f"{cfg['subject_prefix']} | Nova demanda {codigo}"
+
+    urg = "Sim" if bool(dados_email.get("urgencia", False)) else "Não"
+    obs = dados_email.get("observacoes") or "Sem observações."
+    corpo = (
+        "Nova demanda registrada.\n\n"
+        f"Código. {codigo}\n"
+        f"Solicitante. {dados_email.get('solicitante','')}\n"
+        f"Departamento. {dados_email.get('departamento','')}\n"
+        f"Local. {dados_email.get('local','')}\n"
+        f"Categoria. {dados_email.get('categoria','Geral')}\n"
+        f"Prioridade. {dados_email.get('prioridade','')}\n"
+        f"Urgente. {urg}\n"
+        f"Quantidade. {dados_email.get('quantidade','')} {dados_email.get('unidade','')}\n\n"
+        "Descrição.\n"
+        f"{dados_email.get('item','')}\n\n"
+        "Observações.\n"
+        f"{obs}\n"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = assunto
+    msg["From"] = cfg["from"] or cfg["user"]
+    msg["To"] = ", ".join(cfg["to"])
+    if cfg["cc"]:
+        msg["Cc"] = ", ".join(cfg["cc"])
+    msg.set_content(corpo)
+
+    destinos = cfg["to"] + cfg["cc"] + cfg["bcc"]
+
+    try:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=cfg["timeout"]) as server:
+            if cfg["starttls"]:
+                server.starttls()
+            server.login(cfg["user"], cfg["password"])
+            server.send_message(msg, from_addr=msg["From"], to_addrs=destinos)
+        return True, "Email enviado"
+    except Exception as e:
+        return False, f"Falha ao enviar email. {str(e)}"
 
 # =============================
 # Conexão Railway Postgres
@@ -551,7 +659,7 @@ def carregar_demandas(filtros=None):
                         query += " AND codigo = %s"
                         params.append(codigo)
 
-                    # ✅ FILTRO POR PERÍODO (data_criacao)
+                    # Filtro por período (data_criacao)
                     dt_ini = filtros.get("data_ini")
                     dt_fim = filtros.get("data_fim")
                     if dt_ini:
@@ -621,7 +729,7 @@ def adicionar_demanda(dados):
                             dados.get("categoria", "Geral"),
                             dados.get("unidade", "Unid."),
                             bool(dados.get("urgencia", False)),
-                            None,  # ✅ removido do fluxo público
+                            None,  # removido do fluxo público
                             bool(dados.get("almoxarifado", False)),
                             dados.get("valor")
                         ))
@@ -633,7 +741,28 @@ def adicionar_demanda(dados):
                         """, (nova_id, dados["solicitante"], "CRIAÇÃO", dumps_safe(dados)))
 
                         conn.commit()
-                        return {"id": nova_id, "codigo": codigo_ok}
+
+                        # Envio de email (não bloqueia a criação)
+                        ok_mail, msg_mail = enviar_email_nova_demanda({
+                            "codigo": codigo_ok,
+                            "solicitante": dados.get("solicitante", ""),
+                            "departamento": dados.get("departamento", ""),
+                            "local": dados.get("local", "Gerência"),
+                            "prioridade": dados.get("prioridade", ""),
+                            "item": dados.get("item", ""),
+                            "quantidade": dados.get("quantidade", ""),
+                            "unidade": dados.get("unidade", ""),
+                            "urgencia": bool(dados.get("urgencia", False)),
+                            "categoria": dados.get("categoria", "Geral"),
+                            "observacoes": dados.get("observacoes", ""),
+                        })
+
+                        return {
+                            "id": nova_id,
+                            "codigo": codigo_ok,
+                            "email_ok": ok_mail,
+                            "email_msg": msg_mail
+                        }
                     except psycopg2.errors.UniqueViolation:
                         conn.rollback()
                         continue
@@ -645,11 +774,8 @@ def adicionar_demanda(dados):
 
 def atualizar_demanda(demanda_id: int, dados: dict):
     """
-    ✅ Atualiza SOMENTE:
-    - status
-    - almoxarifado
-    - valor
-    - observacoes
+    Atualiza SOMENTE:
+    status, almoxarifado, valor, observacoes
     """
     try:
         with get_db_connection() as conn:
@@ -1065,7 +1191,6 @@ def render_relatorio_mensal_automatico():
 
     st.markdown("---")
 
-    # Tabelas resumo
     df_status = pd.DataFrame(list((est.get("por_status") or {}).items()), columns=["Status", "Quantidade"])
     df_prior = pd.DataFrame(list((est.get("por_prioridade") or {}).items()), columns=["Prioridade", "Quantidade"])
     df_depto = pd.DataFrame(list((est.get("por_departamento") or {}).items()), columns=["Departamento", "Quantidade"])
@@ -1089,16 +1214,6 @@ def render_relatorio_mensal_automatico():
         st.dataframe(df_depto.sort_values("Quantidade", ascending=False), hide_index=True, use_container_width=True)
     else:
         st.info("Sem dados.")
-
-    # Export relatório (CSV consolidado)
-    relatorio = {
-        "periodo_inicio": data_ini.strftime("%d/%m/%Y"),
-        "periodo_fim": data_fim.strftime("%d/%m/%Y"),
-        "totais": totais,
-        "por_status": est.get("por_status", {}),
-        "por_prioridade": est.get("por_prioridade", {}),
-        "por_departamento": est.get("por_departamento", {}),
-    }
 
     df_rel = pd.DataFrame([
         {"Tipo": "Totais", "Chave": "total", "Valor": totais.get("total", 0)},
@@ -1243,6 +1358,10 @@ def pagina_solicitacao():
         st.session_state.solicitacao_enviada = False
     if "ultima_demanda_codigo" not in st.session_state:
         st.session_state.ultima_demanda_codigo = None
+    if "ultima_demanda_email_ok" not in st.session_state:
+        st.session_state.ultima_demanda_email_ok = None
+    if "ultima_demanda_email_msg" not in st.session_state:
+        st.session_state.ultima_demanda_email_msg = None
 
     if st.session_state.solicitacao_enviada:
         st.success(f"""
@@ -1253,6 +1372,12 @@ def pagina_solicitacao():
         Guarde este código para consultar o status posteriormente.
         """)
 
+        # Feedback do email
+        if st.session_state.ultima_demanda_email_ok is True:
+            st.info("📧 Notificação por email enviada.")
+        elif st.session_state.ultima_demanda_email_ok is False:
+            st.warning(f"📧 A demanda foi registrada, mas o email falhou. {st.session_state.ultima_demanda_email_msg}")
+
         st.balloons()
 
         col1, col2 = st.columns(2)
@@ -1260,12 +1385,16 @@ def pagina_solicitacao():
             if st.button("📝 Enviar nova solicitação", use_container_width=True):
                 st.session_state.solicitacao_enviada = False
                 st.session_state.ultima_demanda_codigo = None
+                st.session_state.ultima_demanda_email_ok = None
+                st.session_state.ultima_demanda_email_msg = None
                 st.rerun()
         with col2:
             if st.button("🏠 Voltar ao início", use_container_width=True):
                 st.session_state.pagina_atual = "inicio"
                 st.session_state.solicitacao_enviada = False
                 st.session_state.ultima_demanda_codigo = None
+                st.session_state.ultima_demanda_email_ok = None
+                st.session_state.ultima_demanda_email_msg = None
                 st.rerun()
 
         st.markdown("---")
@@ -1287,8 +1416,7 @@ def pagina_solicitacao():
                 solicitante = st.text_input("👤 Nome do Solicitante*", placeholder="Seu nome completo")
                 departamento = st.selectbox(
                     "🏢 Departamento*",
-                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
-                     placeholder="Selecione"
+                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"]
                 )
                 local = st.selectbox(
                     "📍 Local*",
@@ -1344,6 +1472,8 @@ def pagina_solicitacao():
                         if res and res.get("codigo"):
                             st.session_state.solicitacao_enviada = True
                             st.session_state.ultima_demanda_codigo = res["codigo"]
+                            st.session_state.ultima_demanda_email_ok = res.get("email_ok")
+                            st.session_state.ultima_demanda_email_msg = res.get("email_msg")
                             st.rerun()
                         else:
                             st.error("❌ Erro ao salvar a solicitação. Tente novamente.")
@@ -1597,7 +1727,6 @@ def pagina_admin():
     st.sidebar.markdown("---")
     st.sidebar.subheader("📅 Filtro por período")
 
-    # ✅ período padrão: últimos 30 dias
     hoje = agora_fortaleza().date()
     padrao_ini = hoje - timedelta(days=30)
     padrao_fim = hoje
@@ -1623,7 +1752,6 @@ def pagina_admin():
     if prioridade_filtro:
         filtros["prioridade"] = prioridade_filtro
 
-    # ✅ aplica período
     if data_ini:
         filtros["data_ini"] = _to_tz_aware_start(data_ini)
     if data_fim:
@@ -1670,9 +1798,6 @@ def pagina_admin():
         dados = carregar_demandas(filtros)
         render_resultados_com_detalhes(dados, "Resultados da Busca", mostrar_campos_admin=True)
 
-        # ============================
-        # 🔽 TABELA + EXPORTAÇÃO CSV
-        # ============================
         st.markdown("---")
         st.subheader("📊 Tabela Geral (com filtro aplicado)")
 
@@ -1709,7 +1834,6 @@ def pagina_admin():
 
             st.dataframe(df[colunas_tabela], use_container_width=True, hide_index=True)
 
-            # Exportação CSV (Brasil)
             csv_df = df[colunas_tabela].copy()
             csv_bytes = dataframe_to_csv_br(csv_df)
             nome_arquivo = f"demandas_filtradas_{agora_fortaleza().strftime('%Y%m%d_%H%M')}.csv"
@@ -1808,7 +1932,6 @@ def pagina_admin():
 
             st.markdown("---")
             st.subheader("📋 Prévia do Comprovante (Admin)")
-            # recarrega a demanda atualizada
             atualizado = carregar_demandas({"codigo": demanda.get("codigo")})
             if atualizado:
                 render_comprovante_demanda(atualizado[0], mostrar_campos_admin=True)
@@ -1887,14 +2010,32 @@ Timezone: America/Fortaleza
                     st.error(msg)
 
         st.markdown("---")
+        st.subheader("📧 Configuração de email (por variáveis)")
+        ecfg = get_email_config()
+        st.caption("Tudo aqui vem das variables do Railway.")
+        st.code(f"""
+MAIL_ON_NEW_DEMANDA: {ecfg.get("enabled_new")}
+SMTP_HOST: {ecfg.get("host")}
+SMTP_PORT: {ecfg.get("port")}
+SMTP_USER: {ecfg.get("user")}
+SMTP_STARTTLS: {ecfg.get("starttls")}
+MAIL_FROM: {ecfg.get("from")}
+MAIL_TO: {", ".join(ecfg.get("to", []))}
+MAIL_CC: {", ".join(ecfg.get("cc", []))}
+MAIL_BCC: {", ".join(ecfg.get("bcc", []))}
+MAIL_SUBJECT_PREFIX: {ecfg.get("subject_prefix")}
+MAIL_SEND_TIMEOUT: {ecfg.get("timeout")}
+        """.strip(), language="bash")
+
+        st.markdown("---")
         st.subheader("📊 Informações do Sistema")
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Versão do Sistema", "3.2")
+            st.metric("Versão do Sistema", "3.3")
             st.metric("Fuso Horário", "America/Fortaleza")
         with col2:
-            st.metric("Design", "Comprovante Digital + Relatórios")
+            st.metric("Design", "Comprovante Digital + Relatórios + Email")
             st.metric("Usuários Online", "1")
 
 # =============================
@@ -1951,4 +2092,5 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.2")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.3")
+```
