@@ -489,8 +489,36 @@ def normalizar_busca_codigo(texto: str) -> str:
 # =============================
 # Demandas
 # =============================
+
+def verificar_e_adicionar_coluna_almoxarifado():
+    """Verifica se a coluna almoxarifado existe e a adiciona se necessário"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Verificar se a coluna existe
+                cur.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'demandas' 
+                    AND column_name = 'almoxarifado'
+                """)
+                
+                if not cur.fetchone():
+                    # Adicionar a coluna se não existir
+                    cur.execute("ALTER TABLE demandas ADD COLUMN almoxarifado BOOLEAN DEFAULT FALSE")
+                    conn.commit()
+                    st.success("Coluna 'almoxarifado' adicionada com sucesso!")
+                    return True
+                return False
+    except Exception as e:
+        st.error(f"Erro ao verificar/adicionar coluna almoxarifado: {str(e)}")
+        return False
+
 def carregar_demandas(filtros=None):
     try:
+        # Verificar se a coluna existe antes de carregar
+        verificar_e_adicionar_coluna_almoxarifado()
+        
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
@@ -549,6 +577,9 @@ def carregar_demandas(filtros=None):
                 for d in demandas:
                     d["data_criacao_formatada"] = formatar_data_hora_fortaleza(d.get("data_criacao"))
                     d["data_atualizacao_formatada"] = formatar_data_hora_fortaleza(d.get("data_atualizacao"))
+                    # Garantir que almoxarifado seja booleano
+                    if 'almoxarifado' in d:
+                        d["almoxarifado"] = bool(d["almoxarifado"])
 
                 return demandas
     except Exception as e:
@@ -576,6 +607,9 @@ def carregar_historico_demanda(demanda_id: int):
 
 def adicionar_demanda(dados):
     try:
+        # Verificar se a coluna existe
+        verificar_e_adicionar_coluna_almoxarifado()
+        
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
@@ -625,6 +659,9 @@ def adicionar_demanda(dados):
 
 def atualizar_demanda(demanda_id, dados):
     try:
+        # Verificar se a coluna existe
+        verificar_e_adicionar_coluna_almoxarifado()
+        
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
@@ -720,6 +757,9 @@ def excluir_demanda(demanda_id):
 
 def obter_estatisticas():
     try:
+        # Verificar se a coluna existe
+        verificar_e_adicionar_coluna_almoxarifado()
+        
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
