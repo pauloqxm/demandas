@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -41,6 +41,19 @@ def formatar_data_hora_fortaleza(dt: datetime, formato: str = "%d/%m/%Y %H:%M") 
     if not dt:
         return ""
     return converter_para_fortaleza(dt).strftime(formato)
+
+def _to_tz_aware_start(d: date) -> datetime:
+    """00:00 do dia no fuso Fortaleza."""
+    if not d:
+        return None
+    return FORTALEZA_TZ.localize(datetime(d.year, d.month, d.day, 0, 0, 0))
+
+def _to_tz_aware_end_exclusive(d: date) -> datetime:
+    """Dia seguinte 00:00 no fuso Fortaleza. Útil para filtro < end."""
+    if not d:
+        return None
+    dd = d + timedelta(days=1)
+    return FORTALEZA_TZ.localize(datetime(dd.year, dd.month, dd.day, 0, 0, 0))
 
 # =============================
 # Cores para status
@@ -252,7 +265,6 @@ def verificar_e_atualizar_tabela_demandas():
                 if "codigo" not in existentes:
                     alters.append("ADD COLUMN codigo VARCHAR(20)")
 
-                # NOVOS CAMPOS (admin)
                 if "almoxarifado" not in existentes:
                     alters.append("ADD COLUMN almoxarifado BOOLEAN DEFAULT FALSE")
                 if "valor" not in existentes:
@@ -303,8 +315,6 @@ def init_database():
                         unidade VARCHAR(50) DEFAULT 'Unid.',
                         urgencia BOOLEAN DEFAULT FALSE,
                         estimativa_horas DECIMAL(5,2),
-
-                        -- NOVOS CAMPOS (admin)
                         almoxarifado BOOLEAN DEFAULT FALSE,
                         valor DECIMAL(12,2)
                     )
@@ -541,6 +551,16 @@ def carregar_demandas(filtros=None):
                         query += " AND codigo = %s"
                         params.append(codigo)
 
+                    # ✅ FILTRO POR PERÍODO (data_criacao)
+                    dt_ini = filtros.get("data_ini")
+                    dt_fim = filtros.get("data_fim")
+                    if dt_ini:
+                        query += " AND data_criacao >= %s"
+                        params.append(dt_ini)
+                    if dt_fim:
+                        query += " AND data_criacao < %s"
+                        params.append(dt_fim)
+
                 query += " ORDER BY data_criacao DESC"
 
                 cur.execute(query, params)
@@ -600,8 +620,8 @@ def adicionar_demanda(dados):
                             dados.get("observacoes", ""),
                             dados.get("categoria", "Geral"),
                             dados.get("unidade", "Unid."),
-                            dados.get("urgencia", False),
-                            dados.get("estimativa_horas"),
+                            bool(dados.get("urgencia", False)),
+                            None,  # ✅ removido do fluxo público
                             bool(dados.get("almoxarifado", False)),
                             dados.get("valor")
                         ))
@@ -623,7 +643,14 @@ def adicionar_demanda(dados):
         st.error(f"Erro ao adicionar demanda: {str(e)}")
         return None
 
-def atualizar_demanda(demanda_id, dados):
+def atualizar_demanda(demanda_id: int, dados: dict):
+    """
+    ✅ Atualiza SOMENTE:
+    - status
+    - almoxarifado
+    - valor
+    - observacoes
+    """
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -633,28 +660,17 @@ def atualizar_demanda(demanda_id, dados):
 
                 cur.execute("""
                     UPDATE demandas
-                    SET item = %s, quantidade = %s, solicitante = %s,
-                        departamento = %s, local = %s, prioridade = %s,
-                        observacoes = %s, status = %s, categoria = %s,
-                        unidade = %s, urgencia = %s, estimativa_horas = %s,
-                        almoxarifado = %s, valor = %s,
+                    SET status = %s,
+                        almoxarifado = %s,
+                        valor = %s,
+                        observacoes = %s,
                         data_atualizacao = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (
-                    dados["item"],
-                    dados["quantidade"],
-                    dados["solicitante"],
-                    dados["departamento"],
-                    dados.get("local", "Gerência"),
-                    dados["prioridade"],
-                    dados.get("observacoes", ""),
-                    dados["status"],
-                    dados.get("categoria", "Geral"),
-                    dados.get("unidade", "Unid."),
-                    dados.get("urgencia", False),
-                    dados.get("estimativa_horas"),
+                    dados.get("status"),
                     bool(dados.get("almoxarifado", False)),
                     dados.get("valor"),
+                    dados.get("observacoes", ""),
                     demanda_id
                 ))
 
@@ -701,38 +717,63 @@ def excluir_demanda(demanda_id):
         st.error(f"Erro ao excluir demanda: {str(e)}")
         return False
 
-def obter_estatisticas():
+def obter_estatisticas(filtros=None):
+    """Estatísticas (com filtro por período opcional)."""
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET TIME ZONE 'America/Fortaleza'")
 
+                where = "WHERE 1=1"
+                params = []
+
+                if filtros:
+                    dt_ini = filtros.get("data_ini")
+                    dt_fim = filtros.get("data_fim")
+                    if dt_ini:
+                        where += " AND data_criacao >= %s"
+                        params.append(dt_ini)
+                    if dt_fim:
+                        where += " AND data_criacao < %s"
+                        params.append(dt_fim)
+
+                    if filtros.get("status"):
+                        where += " AND status = ANY(%s)"
+                        params.append(filtros["status"])
+                    if filtros.get("prioridade"):
+                        where += " AND prioridade = ANY(%s)"
+                        params.append(filtros["prioridade"])
+
                 estat = {}
-                cur.execute("""
+
+                cur.execute(f"""
                     SELECT
                         COUNT(*) as total,
                         COUNT(CASE WHEN status = 'Pendente' THEN 1 END) as pendentes,
                         COUNT(CASE WHEN status = 'Em andamento' THEN 1 END) as em_andamento,
                         COUNT(CASE WHEN status = 'Concluída' THEN 1 END) as concluidas,
+                        COUNT(CASE WHEN status = 'Cancelada' THEN 1 END) as canceladas,
                         COUNT(CASE WHEN urgencia = TRUE THEN 1 END) as urgentes,
                         COALESCE(SUM(quantidade), 0) as total_itens,
-                        COALESCE(SUM(estimativa_horas), 0) as total_horas,
                         COALESCE(SUM(valor), 0) as total_valor
                     FROM demandas
-                """)
+                    {where}
+                """, params)
                 estat["totais"] = cur.fetchone() or {}
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT departamento, COUNT(*) as quantidade
                     FROM demandas
+                    {where}
                     GROUP BY departamento
                     ORDER BY quantidade DESC
-                """)
+                """, params)
                 estat["por_departamento"] = {r["departamento"]: r["quantidade"] for r in cur.fetchall()}
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT prioridade, COUNT(*) as quantidade
                     FROM demandas
+                    {where}
                     GROUP BY prioridade
                     ORDER BY
                         CASE prioridade
@@ -741,14 +782,15 @@ def obter_estatisticas():
                             WHEN 'Média' THEN 3
                             ELSE 4
                         END
-                """)
+                """, params)
                 estat["por_prioridade"] = {r["prioridade"]: r["quantidade"] for r in cur.fetchall()}
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT status, COUNT(*) as quantidade
                     FROM demandas
+                    {where}
                     GROUP BY status
-                """)
+                """, params)
                 estat["por_status"] = {r["status"]: r["quantidade"] for r in cur.fetchall()}
 
                 return estat
@@ -768,14 +810,13 @@ def formatar_brl(valor) -> str:
     s = s.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {s}"
 
+def dataframe_to_csv_br(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
+
 # =============================
-# UI helper: Comprovante (novo design)
+# UI helper: Comprovante
 # =============================
 def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
-    """Renderiza uma demanda como comprovante estilizado.
-    mostrar_campos_admin = True apenas na área administrativa.
-    """
-
     cor_status = CORES_STATUS.get(d.get("status", "Pendente"), "#FF6B6B")
     cor_prioridade = CORES_PRIORIDADE.get(d.get("prioridade", "Média"), "#FFD166")
 
@@ -837,7 +878,6 @@ def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
                 ("Local:", d.get("local", "Gerência")),
                 ("Categoria:", d.get("categoria", "Geral")),
                 ("Quantidade:", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
-                ("Estimativa:", f"{float(d.get('estimativa_horas') or 0):.1f} horas" if d.get("estimativa_horas") else "Não informada"),
                 ("Urgente:", "✅ Sim" if d.get("urgencia") else "❌ Não"),
             ]
 
@@ -866,7 +906,7 @@ def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
             if st.button("📋 Copiar Código", key=f"copy_{codigo}", use_container_width=True):
                 st.session_state.copied_code = codigo
                 st.toast(f"Código {codigo} copiado!", icon="📋")
-                time.sleep(0.3)
+                time.sleep(0.2)
                 st.rerun()
 
             st.markdown("### 💬 Observações")
@@ -986,6 +1026,145 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados", m
             render_comprovante_demanda(d, mostrar_campos_admin=mostrar_campos_admin)
 
 # =============================
+# Relatório Mensal (Admin)
+# =============================
+def render_relatorio_mensal_automatico():
+    st.subheader("📅 Relatório Mensal Automático")
+
+    hoje = agora_fortaleza().date()
+    ano_padrao = hoje.year
+    mes_padrao = hoje.month
+
+    colm1, colm2, colm3 = st.columns([1, 1, 2])
+    with colm1:
+        ano = st.number_input("Ano", min_value=2020, max_value=2100, value=ano_padrao, step=1)
+    with colm2:
+        mes = st.selectbox("Mês", list(range(1, 13)), index=mes_padrao - 1)
+    with colm3:
+        st.caption("Esse relatório se gera sozinho conforme mês selecionado.")
+
+    data_ini = date(int(ano), int(mes), 1)
+    if mes == 12:
+        data_fim = date(int(ano) + 1, 1, 1) - timedelta(days=1)
+    else:
+        data_fim = date(int(ano), int(mes) + 1, 1) - timedelta(days=1)
+
+    filtros_mes = {
+        "data_ini": _to_tz_aware_start(data_ini),
+        "data_fim": _to_tz_aware_end_exclusive(data_fim),
+    }
+
+    est = obter_estatisticas(filtros_mes)
+    totais = est.get("totais", {}) if est else {}
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("📋 Total", totais.get("total", 0))
+    col2.metric("📦 Itens", totais.get("total_itens", 0))
+    col3.metric("⚠️ Urgentes", totais.get("urgentes", 0))
+    col4.metric("💰 Valor total", formatar_brl(totais.get("total_valor", 0) or 0))
+
+    st.markdown("---")
+
+    # Tabelas resumo
+    df_status = pd.DataFrame(list((est.get("por_status") or {}).items()), columns=["Status", "Quantidade"])
+    df_prior = pd.DataFrame(list((est.get("por_prioridade") or {}).items()), columns=["Prioridade", "Quantidade"])
+    df_depto = pd.DataFrame(list((est.get("por_departamento") or {}).items()), columns=["Departamento", "Quantidade"])
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### 🏷️ Por Status")
+        if not df_status.empty:
+            st.dataframe(df_status.sort_values("Quantidade", ascending=False), hide_index=True, use_container_width=True)
+        else:
+            st.info("Sem dados.")
+    with c2:
+        st.markdown("### 🚨 Por Prioridade")
+        if not df_prior.empty:
+            st.dataframe(df_prior.sort_values("Quantidade", ascending=False), hide_index=True, use_container_width=True)
+        else:
+            st.info("Sem dados.")
+
+    st.markdown("### 🏢 Por Departamento")
+    if not df_depto.empty:
+        st.dataframe(df_depto.sort_values("Quantidade", ascending=False), hide_index=True, use_container_width=True)
+    else:
+        st.info("Sem dados.")
+
+    # Export relatório (CSV consolidado)
+    relatorio = {
+        "periodo_inicio": data_ini.strftime("%d/%m/%Y"),
+        "periodo_fim": data_fim.strftime("%d/%m/%Y"),
+        "totais": totais,
+        "por_status": est.get("por_status", {}),
+        "por_prioridade": est.get("por_prioridade", {}),
+        "por_departamento": est.get("por_departamento", {}),
+    }
+
+    df_rel = pd.DataFrame([
+        {"Tipo": "Totais", "Chave": "total", "Valor": totais.get("total", 0)},
+        {"Tipo": "Totais", "Chave": "total_itens", "Valor": totais.get("total_itens", 0)},
+        {"Tipo": "Totais", "Chave": "urgentes", "Valor": totais.get("urgentes", 0)},
+        {"Tipo": "Totais", "Chave": "total_valor", "Valor": float(totais.get("total_valor", 0) or 0)},
+    ])
+
+    for k, v in (est.get("por_status") or {}).items():
+        df_rel = pd.concat([df_rel, pd.DataFrame([{"Tipo": "Status", "Chave": k, "Valor": v}])], ignore_index=True)
+    for k, v in (est.get("por_prioridade") or {}).items():
+        df_rel = pd.concat([df_rel, pd.DataFrame([{"Tipo": "Prioridade", "Chave": k, "Valor": v}])], ignore_index=True)
+    for k, v in (est.get("por_departamento") or {}).items():
+        df_rel = pd.concat([df_rel, pd.DataFrame([{"Tipo": "Departamento", "Chave": k, "Valor": v}])], ignore_index=True)
+
+    st.markdown("---")
+    st.subheader("⬇️ Exportações do mês")
+
+    nome_arq_rel = f"relatorio_mensal_{ano}_{mes:02d}.csv"
+    st.download_button(
+        "⬇️ Baixar relatório mensal (CSV)",
+        data=dataframe_to_csv_br(df_rel),
+        file_name=nome_arq_rel,
+        mime="text/csv",
+        use_container_width=True
+    )
+
+    demandas_mes = carregar_demandas(filtros_mes)
+    if demandas_mes:
+        df_dm = pd.DataFrame(demandas_mes)
+        df_dm["data_criacao"] = df_dm.get("data_criacao_formatada")
+        df_dm["almoxarifado"] = df_dm["almoxarifado"].apply(lambda x: "Sim" if x else "Não")
+        df_dm["valor"] = df_dm["valor"].fillna(0).astype(float)
+
+        cols = [
+            "codigo", "solicitante", "departamento", "local",
+            "status", "prioridade", "quantidade", "unidade",
+            "almoxarifado", "valor", "data_criacao"
+        ]
+        df_dm_out = df_dm[cols].copy()
+        df_dm_out.rename(columns={
+            "codigo": "Código",
+            "solicitante": "Solicitante",
+            "departamento": "Departamento",
+            "local": "Local",
+            "status": "Status",
+            "prioridade": "Prioridade",
+            "quantidade": "Quantidade",
+            "unidade": "Unidade",
+            "almoxarifado": "Almoxarifado",
+            "valor": "Valor",
+            "data_criacao": "Data Criação",
+        }, inplace=True)
+
+        nome_arq_dm = f"demandas_{ano}_{mes:02d}.csv"
+        st.download_button(
+            "⬇️ Baixar demandas do mês (CSV)",
+            data=dataframe_to_csv_br(df_dm_out),
+            file_name=nome_arq_dm,
+            mime="text/csv",
+            use_container_width=True
+        )
+    else:
+        st.info("Sem demandas no mês selecionado.")
+
+# =============================
 # Páginas
 # =============================
 def pagina_inicial():
@@ -1095,7 +1274,6 @@ def pagina_solicitacao():
         filtros = {"codigo": st.session_state.ultima_demanda_codigo}
         resultado = carregar_demandas(filtros)
         if resultado:
-            # NÃO mostrar campos admin aqui
             render_comprovante_demanda(resultado[0], mostrar_campos_admin=False)
 
         return
@@ -1124,10 +1302,10 @@ def pagina_solicitacao():
             with col2:
                 item = st.text_area("📝 Descrição da Demanda*", placeholder="Descreva detalhadamente o que está solicitando...", height=120)
                 quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
-                unidade = st.selectbox("📏 Unidade*",
+                unidade = st.selectbox(
+                    "📏 Unidade*",
                     ["Selecione", "Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
                 )
-                estimativa_horas = st.number_input("⏱️ Estimativa (horas)", min_value=0.0, value=0.0, step=0.5)
 
             col3, col4 = st.columns(2)
             with col3:
@@ -1156,11 +1334,9 @@ def pagina_solicitacao():
                             "local": local,
                             "prioridade": prioridade,
                             "observacoes": observacoes,
-                            "categoria": categoria,
+                            "categoria": categoria if categoria != "Selecione" else "Geral",
                             "unidade": unidade,
                             "urgencia": bool(urgencia),
-                            "estimativa_horas": float(estimativa_horas) if estimativa_horas and estimativa_horas > 0 else None,
-                            # NÃO enviar almoxarifado/valor aqui
                         }
 
                         res = adicionar_demanda(nova_demanda)
@@ -1197,7 +1373,6 @@ def pagina_solicitacao():
                 st.warning("⚠️ Digite o nome do solicitante ou o código para buscar.")
             else:
                 resultados = carregar_demandas(filtros)
-                # NÃO mostrar campos admin aqui
                 render_resultados_com_detalhes(resultados, "📋 Demandas Encontradas", mostrar_campos_admin=False)
         else:
             st.info("ℹ️ As últimas demandas aparecerão aqui após a busca.")
@@ -1398,14 +1573,15 @@ def pagina_admin():
     usuario_nivel = st.session_state.get("usuario_nivel", "usuario")
     usuario_admin = st.session_state.get("usuario_admin", False)
 
-    menu = ["🏠 Dashboard", "📋 Todas as Demandas", "✏️ Editar Demanda", "📊 Estatísticas", "⚙️ Configurações"]
+    menu = ["🏠 Dashboard", "📋 Todas as Demandas", "✏️ Editar Demanda", "📅 Relatório Mensal", "📊 Estatísticas", "⚙️ Configurações"]
     if usuario_admin:
-        menu.insert(4, "👥 Gerenciar Usuários")
+        menu.insert(5, "👥 Gerenciar Usuários")
 
     menu_sel = st.sidebar.radio("Navegação", menu)
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔎 Filtros Rápidos")
+
     status_filtro = st.sidebar.multiselect(
         "Status",
         ["Pendente", "Em andamento", "Concluída", "Cancelada"],
@@ -1416,6 +1592,22 @@ def pagina_admin():
         ["Urgente", "Alta", "Média", "Baixa"],
         default=["Urgente", "Alta", "Média", "Baixa"]
     )
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📅 Filtro por período")
+
+    # ✅ período padrão: últimos 30 dias
+    hoje = agora_fortaleza().date()
+    padrao_ini = hoje - timedelta(days=30)
+    padrao_fim = hoje
+
+    data_ini = st.sidebar.date_input("Data inicial", value=st.session_state.get("filtro_data_ini", padrao_ini))
+    data_fim = st.sidebar.date_input("Data final", value=st.session_state.get("filtro_data_fim", padrao_fim))
+
+    st.session_state.filtro_data_ini = data_ini
+    st.session_state.filtro_data_fim = data_fim
+
+    st.sidebar.caption("O filtro usa data de criação da demanda.")
 
     st.sidebar.markdown("---")
     if st.sidebar.button("🚪 Logout", use_container_width=True):
@@ -1430,11 +1622,17 @@ def pagina_admin():
     if prioridade_filtro:
         filtros["prioridade"] = prioridade_filtro
 
+    # ✅ aplica período
+    if data_ini:
+        filtros["data_ini"] = _to_tz_aware_start(data_ini)
+    if data_fim:
+        filtros["data_fim"] = _to_tz_aware_end_exclusive(data_fim)
+
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M:%S')}")
 
     if menu_sel == "🏠 Dashboard":
         st.header("📊 Dashboard Administrativo")
-        est = obter_estatisticas()
+        est = obter_estatisticas(filtros)
         if not est:
             st.info("📭 Sem dados disponíveis.")
             return
@@ -1445,10 +1643,10 @@ def pagina_admin():
         col1.metric("📋 Total", totais.get("total", 0))
         col2.metric("⏳ Pendentes", totais.get("pendentes", 0), delta=f"+{totais.get('em_andamento', 0)} em andamento")
         col3.metric("⚠️ Urgentes", totais.get("urgentes", 0))
-        col4.metric("📦 Total Itens", totais.get("total_itens", 0))
+        col4.metric("💰 Valor", formatar_brl(totais.get("total_valor", 0) or 0))
 
         st.markdown("---")
-        st.subheader("📋 Últimas Demandas")
+        st.subheader("📋 Últimas Demandas (com filtro aplicado)")
         rec = carregar_demandas(filtros)[:15]
         render_resultados_com_detalhes(rec, "Últimas 15 demandas", mostrar_campos_admin=True)
 
@@ -1471,16 +1669,69 @@ def pagina_admin():
         dados = carregar_demandas(filtros)
         render_resultados_com_detalhes(dados, "Resultados da Busca", mostrar_campos_admin=True)
 
+        # ============================
+        # 🔽 TABELA + EXPORTAÇÃO CSV
+        # ============================
+        st.markdown("---")
+        st.subheader("📊 Tabela Geral (com filtro aplicado)")
+
+        if not dados:
+            st.info("📭 Nenhuma demanda para exibir na tabela.")
+        else:
+            df = pd.DataFrame(dados)
+
+            df["Data Criação"] = df["data_criacao_formatada"]
+            df["Código"] = df["codigo"]
+            df["Solicitante"] = df["solicitante"]
+            df["Departamento"] = df["departamento"]
+            df["Local"] = df["local"]
+            df["Status"] = df["status"]
+            df["Prioridade"] = df["prioridade"]
+            df["Quantidade"] = df["quantidade"]
+            df["Unidade"] = df["unidade"]
+            df["Almoxarifado"] = df["almoxarifado"].apply(lambda x: "Sim" if x else "Não")
+            df["Valor (R$)"] = df["valor"].fillna(0).apply(formatar_brl)
+
+            colunas_tabela = [
+                "Código",
+                "Solicitante",
+                "Departamento",
+                "Local",
+                "Status",
+                "Prioridade",
+                "Quantidade",
+                "Unidade",
+                "Almoxarifado",
+                "Valor (R$)",
+                "Data Criação",
+            ]
+
+            st.dataframe(df[colunas_tabela], use_container_width=True, hide_index=True)
+
+            # Exportação CSV (Brasil)
+            csv_df = df[colunas_tabela].copy()
+            csv_bytes = dataframe_to_csv_br(csv_df)
+            nome_arquivo = f"demandas_filtradas_{agora_fortaleza().strftime('%Y%m%d_%H%M')}.csv"
+
+            st.download_button(
+                label="⬇️ Exportar CSV das demandas filtradas",
+                data=csv_bytes,
+                file_name=nome_arquivo,
+                mime="text/csv",
+                use_container_width=True
+            )
+
     elif menu_sel == "✏️ Editar Demanda":
         if usuario_nivel not in ["supervisor", "administrador"]:
             st.error("⛔ Apenas supervisores e administradores podem editar demandas.")
             return
 
         st.header("✏️ Editar Demanda")
+        st.caption("Editável somente: Status, Almoxarifado, Valor e Observações.")
 
-        todas = carregar_demandas()
+        todas = carregar_demandas(filtros)
         if not todas:
-            st.info("📭 Nenhuma demanda cadastrada.")
+            st.info("📭 Nenhuma demanda cadastrada nesse período/filtro.")
             return
 
         opcoes = [f"{d.get('codigo','SEM-COD')} | {d['solicitante']} | {d['item'][:50]}..." for d in todas]
@@ -1488,67 +1739,47 @@ def pagina_admin():
 
         if escolha:
             codigo_selecionado = escolha.split("|")[0].strip()
-            demanda_id = next((d["id"] for d in todas if d.get("codigo") == codigo_selecionado), None)
+            demanda = next((d for d in todas if d.get("codigo") == codigo_selecionado), None)
 
-            if not demanda_id:
+            if not demanda:
                 st.error("Demanda não encontrada.")
                 return
 
-            demanda_atual = next((d for d in todas if d["id"] == demanda_id), None)
-            if not demanda_atual:
-                st.error("Erro ao carregar dados da demanda.")
-                return
+            demanda_id = int(demanda["id"])
+            st.markdown(f"**Editando demanda:** `{demanda.get('codigo', '')}`")
 
-            st.markdown(f"**Editando demanda:** `{demanda_atual.get('codigo', '')}`")
+            with st.expander("👀 Visualizar campos bloqueados", expanded=False):
+                st.text_input("Descrição", value=demanda.get("item", ""), disabled=True)
+                c1, c2, c3 = st.columns(3)
+                c1.text_input("Solicitante", value=demanda.get("solicitante", ""), disabled=True)
+                c2.text_input("Departamento", value=demanda.get("departamento", ""), disabled=True)
+                c3.text_input("Local", value=demanda.get("local", ""), disabled=True)
+                c4, c5, c6 = st.columns(3)
+                c4.text_input("Prioridade", value=demanda.get("prioridade", ""), disabled=True)
+                c5.text_input("Quantidade", value=str(demanda.get("quantidade", "")), disabled=True)
+                c6.text_input("Unidade", value=demanda.get("unidade", ""), disabled=True)
 
             with st.form(f"form_editar_{demanda_id}"):
-                col1, col2 = st.columns(2)
+                status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
+                st_index = status_lista.index(demanda["status"]) if demanda["status"] in status_lista else 0
 
-                with col1:
-                    item_edit = st.text_area("📝 Descrição", value=demanda_atual["item"], height=100)
-                    quantidade_edit = st.number_input("🔢 Quantidade", min_value=1, value=int(demanda_atual["quantidade"]))
-                    solicitante_edit = st.text_input("👤 Solicitante", value=demanda_atual["solicitante"])
+                status_edit = st.selectbox("📊 Status", status_lista, index=st_index)
 
-                    locais_lista = ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
-                                    "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
+                almoxarifado_edit = st.selectbox(
+                    "📦 Almoxarifado",
+                    ["Não", "Sim"],
+                    index=1 if bool(demanda.get("almoxarifado", False)) else 0
+                )
 
-                    local_atual = demanda_atual.get("local", "Gerência")
-                    local_index = locais_lista.index(local_atual) if local_atual in locais_lista else 0
-                    local_edit = st.selectbox("📍 Local", locais_lista, index=local_index)
+                valor_edit = st.number_input(
+                    "💰 Valor (R$)",
+                    min_value=0.0,
+                    value=float(demanda.get("valor") or 0.0),
+                    step=10.0,
+                    format="%.2f"
+                )
 
-                with col2:
-                    prioridade_lista = ["Baixa", "Média", "Alta", "Urgente"]
-                    status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
-
-                    pri_index = prioridade_lista.index(demanda_atual["prioridade"]) if demanda_atual["prioridade"] in prioridade_lista else 1
-                    st_index = status_lista.index(demanda_atual["status"]) if demanda_atual["status"] in status_lista else 0
-
-                    prioridade_edit = st.selectbox("🚨 Prioridade", prioridade_lista, index=pri_index)
-                    status_edit = st.selectbox("📊 Status", status_lista, index=st_index)
-
-                    unidades_lista = ["Kg", "Litro", "Unid.", "Metros", "m²", "m³", "Outro"]
-                    unidade_atual = demanda_atual.get("unidade", "Unid.")
-                    uni_index = unidades_lista.index(unidade_atual) if unidade_atual in unidades_lista else 2
-
-                    categoria_edit = st.text_input("📂 Categoria", value=demanda_atual.get("categoria") or "Geral")
-                    unidade_edit = st.selectbox("📏 Unidade", unidades_lista, index=uni_index)
-                    urgencia_edit = st.checkbox("🚨 Urgente", value=bool(demanda_atual.get("urgencia", False)))
-
-                    # NOVOS CAMPOS (somente admin)
-                    almoxarifado_edit = st.selectbox(
-                        "📦 Almoxarifado",
-                        ["Não", "Sim"],
-                        index=1 if bool(demanda_atual.get("almoxarifado", False)) else 0
-                    )
-                    valor_edit = st.number_input(
-                        "💰 Valor (R$)",
-                        min_value=0.0,
-                        value=float(demanda_atual.get("valor") or 0.0),
-                        step=10.0,
-                        format="%.2f"
-                    )
-
-                    observacoes_edit = st.text_area("💬 Observações", value=demanda_atual.get("observacoes") or "", height=100)
+                observacoes_edit = st.text_area("💬 Observações", value=demanda.get("observacoes") or "", height=120)
 
                 col_b1, col_b2, col_b3 = st.columns(3)
                 salvar = col_b1.form_submit_button("💾 Salvar Alterações", type="primary")
@@ -1557,20 +1788,10 @@ def pagina_admin():
 
                 if salvar:
                     ok = atualizar_demanda(demanda_id, {
-                        "item": item_edit,
-                        "quantidade": int(quantidade_edit),
-                        "solicitante": solicitante_edit,
-                        "departamento": demanda_atual.get("departamento", ""),
-                        "local": local_edit,
-                        "prioridade": prioridade_edit,
                         "status": status_edit,
-                        "categoria": categoria_edit,
-                        "unidade": unidade_edit,
-                        "urgencia": bool(urgencia_edit),
-                        "observacoes": observacoes_edit,
-                        "estimativa_horas": demanda_atual.get("estimativa_horas"),
                         "almoxarifado": (almoxarifado_edit == "Sim"),
                         "valor": float(valor_edit) if valor_edit and valor_edit > 0 else None,
+                        "observacoes": observacoes_edit,
                     })
                     if ok:
                         st.success("✅ Demanda atualizada com sucesso!")
@@ -1586,21 +1807,28 @@ def pagina_admin():
 
             st.markdown("---")
             st.subheader("📋 Prévia do Comprovante (Admin)")
-            render_comprovante_demanda(demanda_atual, mostrar_campos_admin=True)
+            # recarrega a demanda atualizada
+            atualizado = carregar_demandas({"codigo": demanda.get("codigo")})
+            if atualizado:
+                render_comprovante_demanda(atualizado[0], mostrar_campos_admin=True)
+            else:
+                render_comprovante_demanda(demanda, mostrar_campos_admin=True)
+
+    elif menu_sel == "📅 Relatório Mensal":
+        render_relatorio_mensal_automatico()
 
     elif menu_sel == "👥 Gerenciar Usuários":
         pagina_gerenciar_usuarios()
 
     elif menu_sel == "📊 Estatísticas":
-        st.header("📊 Estatísticas Avançadas")
-        est = obter_estatisticas()
+        st.header("📊 Estatísticas Avançadas (com filtro aplicado)")
+        est = obter_estatisticas(filtros)
 
         if not est:
             st.info("📭 Sem dados disponíveis para análise.")
             return
 
         totais = est.get("totais", {})
-        st.metric("⏱️ Total de horas estimadas", f"{float(totais.get('total_horas', 0) or 0):.1f}h")
         st.metric("💰 Total de valores", formatar_brl(totais.get("total_valor", 0) or 0))
 
         col1, col2 = st.columns(2)
@@ -1662,10 +1890,10 @@ Timezone: America/Fortaleza
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Versão do Sistema", "3.0")
+            st.metric("Versão do Sistema", "3.2")
             st.metric("Fuso Horário", "America/Fortaleza")
         with col2:
-            st.metric("Design", "Comprovante Digital")
+            st.metric("Design", "Comprovante Digital + Relatórios")
             st.metric("Usuários Online", "1")
 
 # =============================
@@ -1722,4 +1950,4 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.0")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.2")
