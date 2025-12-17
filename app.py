@@ -11,7 +11,8 @@ from urllib.parse import urlparse
 import hashlib
 import pytz
 import time
-import requests
+import smtplib
+from email.message import EmailMessage
 
 # =============================
 # Configuração da página
@@ -74,18 +75,21 @@ CORES_PRIORIDADE = {
 }
 
 # =============================
-# Email (Resend via HTTPS)
+# Email (variáveis de ambiente)
 # =============================
-# Railway Variables sugeridas:
-# MAIL_PROVIDER=resend
-# RESEND_API_KEY=re_xxx
-# MAIL_ON_NEW_DEMANDA=true
-# MAIL_FROM=Sistema de Demandas <onboarding@resend.dev>   # ou seu domínio verificado no Resend
-# MAIL_TO=pauloqxm@gmail.com,email2@dominio.com
+# Configure no Railway (Brevo):
+# SMTP_HOST=smtp-relay.brevo.com
+# SMTP_PORT=587
+# SMTP_USER=xxxx@smtp-brevo.com
+# SMTP_PASSWORD=sua_smtp_key   (fallback: SMTP_PASS)
+# SMTP_STARTTLS=true
+# MAIL_FROM=paulo.ferreira@cogerh.com.br
+# MAIL_TO=email1@dominio.com,email2@dominio.com
 # MAIL_CC=
 # MAIL_BCC=
+# MAIL_ON_NEW_DEMANDA=true
 # MAIL_SUBJECT_PREFIX=Sistema de Demandas GRBANABUIU
-# MAIL_SEND_TIMEOUT=15
+# MAIL_SEND_TIMEOUT=20
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
@@ -105,60 +109,28 @@ def _env_list(name: str) -> list:
     return [x for x in itens if x]
 
 def get_email_config() -> dict:
-    provider = (os.environ.get("MAIL_PROVIDER") or "resend").strip().lower()
+    # Brevo costuma usar SMTP_PASSWORD (SMTP Key).
+    # Mantemos compatibilidade com SMTP_PASS para não quebrar config antiga.
+    smtp_password = (
+        os.environ.get("SMTP_PASSWORD")
+        or os.environ.get("SMTP_PASS")
+        or ""
+    )
+
     return {
-        "provider": provider,
         "enabled_new": _env_bool("MAIL_ON_NEW_DEMANDA", True),
-
-        # RESEND
-        "resend_api_key": (os.environ.get("RESEND_API_KEY") or "").strip(),
-
-        # Comuns
+        "host": os.environ.get("SMTP_HOST", "").strip(),
+        "port": _env_int("SMTP_PORT", 587),
+        "user": os.environ.get("SMTP_USER", "").strip(),
+        "password": smtp_password,
+        "starttls": _env_bool("SMTP_STARTTLS", True),
         "from": (os.environ.get("MAIL_FROM") or "").strip(),
         "to": _env_list("MAIL_TO"),
         "cc": _env_list("MAIL_CC"),
         "bcc": _env_list("MAIL_BCC"),
         "subject_prefix": os.environ.get("MAIL_SUBJECT_PREFIX", "Sistema de Demandas").strip(),
-        "timeout": _env_int("MAIL_SEND_TIMEOUT", 15),
+        "timeout": _env_int("MAIL_SEND_TIMEOUT", 20),
     }
-
-def _send_email_resend(subject: str, text: str, cfg: dict) -> tuple:
-    if not cfg.get("resend_api_key"):
-        return False, "RESEND_API_KEY não configurada"
-    if not cfg.get("from"):
-        return False, "MAIL_FROM vazio"
-    if not cfg.get("to"):
-        return False, "MAIL_TO vazio"
-
-    url = "https://api.resend.com/emails"
-    headers = {
-        "Authorization": f"Bearer {cfg['resend_api_key']}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "from": cfg["from"],
-        "to": cfg["to"],
-        "subject": subject,
-        "text": text,
-    }
-
-    if cfg.get("cc"):
-        payload["cc"] = cfg["cc"]
-    if cfg.get("bcc"):
-        payload["bcc"] = cfg["bcc"]
-
-    try:
-        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=cfg.get("timeout", 15))
-        if 200 <= r.status_code < 300:
-            return True, "Email enviado (Resend)"
-        try:
-            err = r.json()
-        except Exception:
-            err = {"message": r.text}
-        return False, f"Resend falhou. HTTP {r.status_code}. {err}"
-    except Exception as e:
-        return False, f"Falha Resend. {str(e)}"
 
 def enviar_email_nova_demanda(dados_email: dict) -> tuple:
     """
@@ -169,6 +141,10 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
 
     if not cfg["enabled_new"]:
         return True, "Envio de email desativado por variável"
+    if not cfg["host"] or not cfg["user"] or not cfg["password"]:
+        return False, "SMTP não configurado nas variáveis"
+    if not cfg["to"]:
+        return False, "MAIL_TO vazio"
 
     codigo = dados_email.get("codigo", "SEM-COD")
     assunto = f"{cfg['subject_prefix']} | Nova demanda {codigo}"
@@ -191,12 +167,27 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
         f"{obs}\n"
     )
 
-    provider = cfg.get("provider", "resend").lower()
+    msg = EmailMessage()
+    msg["Subject"] = assunto
+    msg["From"] = cfg["from"] or cfg["user"]
+    msg["To"] = ", ".join(cfg["to"])
+    if cfg["cc"]:
+        msg["Cc"] = ", ".join(cfg["cc"])
+    msg.set_content(corpo)
 
-    if provider == "resend":
-        return _send_email_resend(assunto, corpo, cfg)
+    destinos = cfg["to"] + cfg["cc"] + cfg["bcc"]
 
-    return False, "MAIL_PROVIDER inválido. Use 'resend'."
+    try:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=cfg["timeout"]) as server:
+            server.ehlo()
+            if cfg["starttls"]:
+                server.starttls()
+                server.ehlo()
+            server.login(cfg["user"], cfg["password"])
+            server.send_message(msg, from_addr=msg["From"], to_addrs=destinos)
+        return True, "Email enviado"
+    except Exception as e:
+        return False, f"Falha ao enviar email. {str(e)}"
 
 # =============================
 # Conexão Railway Postgres
@@ -677,6 +668,7 @@ def carregar_demandas(filtros=None):
                         query += " AND codigo = %s"
                         params.append(codigo)
 
+                    # Filtro por período (data_criacao)
                     dt_ini = filtros.get("data_ini")
                     dt_fim = filtros.get("data_fim")
                     if dt_ini:
@@ -746,7 +738,7 @@ def adicionar_demanda(dados):
                             dados.get("categoria", "Geral"),
                             dados.get("unidade", "Unid."),
                             bool(dados.get("urgencia", False)),
-                            None,
+                            None,  # removido do fluxo público
                             bool(dados.get("almoxarifado", False)),
                             dados.get("valor")
                         ))
@@ -759,6 +751,7 @@ def adicionar_demanda(dados):
 
                         conn.commit()
 
+                        # Envio de email (não bloqueia a criação)
                         ok_mail, msg_mail = enviar_email_nova_demanda({
                             "codigo": codigo_ok,
                             "solicitante": dados.get("solicitante", ""),
