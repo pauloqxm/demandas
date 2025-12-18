@@ -77,19 +77,20 @@ CORES_PRIORIDADE = {
 # =============================
 # Email (variáveis de ambiente)
 # =============================
-# Configure no Railway (Brevo):
+# Recomendado Railway:
 # SMTP_HOST=smtp-relay.brevo.com
 # SMTP_PORT=587
 # SMTP_USER=xxxx@smtp-brevo.com
 # SMTP_PASSWORD=sua_smtp_key   (fallback: SMTP_PASS)
 # SMTP_STARTTLS=true
-# MAIL_FROM=paulo.ferreira@cogerh.com.br
+# SMTP_TIMEOUT=20   (fallback: MAIL_SEND_TIMEOUT)
+# MAIL_FROM=seu-remetente@dominio.com
+# MAIL_REPLY_TO=seu-email@dominio.com (opcional)
 # MAIL_TO=email1@dominio.com,email2@dominio.com
 # MAIL_CC=
 # MAIL_BCC=
 # MAIL_ON_NEW_DEMANDA=true
 # MAIL_SUBJECT_PREFIX=Sistema de Demandas GRBANABUIU
-# MAIL_SEND_TIMEOUT=20
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
@@ -105,17 +106,18 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_list(name: str) -> list:
     raw = os.environ.get(name, "") or ""
-    itens = [x.strip() for x in raw.replace(";", ",").split(",")]
+    # aceita: a,b ; a;b ; a, b ; a; b
+    raw = raw.replace(";", ",")
+    itens = [x.strip() for x in raw.split(",")]
     return [x for x in itens if x]
 
 def get_email_config() -> dict:
-    # Brevo costuma usar SMTP_PASSWORD (SMTP Key).
-    # Mantemos compatibilidade com SMTP_PASS para não quebrar config antiga.
-    smtp_password = (
-        os.environ.get("SMTP_PASSWORD")
-        or os.environ.get("SMTP_PASS")
-        or ""
-    )
+    smtp_password = (os.environ.get("SMTP_PASSWORD") or os.environ.get("SMTP_PASS") or "").strip()
+
+    # timeout: prioriza SMTP_TIMEOUT, depois MAIL_SEND_TIMEOUT (compat)
+    timeout = _env_int("SMTP_TIMEOUT", 0)
+    if not timeout:
+        timeout = _env_int("MAIL_SEND_TIMEOUT", 20)
 
     return {
         "enabled_new": _env_bool("MAIL_ON_NEW_DEMANDA", True),
@@ -125,11 +127,12 @@ def get_email_config() -> dict:
         "password": smtp_password,
         "starttls": _env_bool("SMTP_STARTTLS", True),
         "from": (os.environ.get("MAIL_FROM") or "").strip(),
+        "reply_to": (os.environ.get("MAIL_REPLY_TO") or "").strip(),
         "to": _env_list("MAIL_TO"),
         "cc": _env_list("MAIL_CC"),
         "bcc": _env_list("MAIL_BCC"),
         "subject_prefix": os.environ.get("MAIL_SUBJECT_PREFIX", "Sistema de Demandas").strip(),
-        "timeout": _env_int("MAIL_SEND_TIMEOUT", 20),
+        "timeout": timeout,
     }
 
 def enviar_email_nova_demanda(dados_email: dict) -> tuple:
@@ -141,8 +144,10 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
 
     if not cfg["enabled_new"]:
         return True, "Envio de email desativado por variável"
+
     if not cfg["host"] or not cfg["user"] or not cfg["password"]:
-        return False, "SMTP não configurado nas variáveis"
+        return False, "SMTP não configurado nas variáveis (SMTP_HOST/SMTP_USER/SMTP_PASSWORD)"
+
     if not cfg["to"]:
         return False, "MAIL_TO vazio"
 
@@ -151,6 +156,7 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
 
     urg = "Sim" if bool(dados_email.get("urgencia", False)) else "Não"
     obs = dados_email.get("observacoes") or "Sem observações."
+
     corpo = (
         "Nova demanda registrada.\n\n"
         f"Código. {codigo}\n"
@@ -169,10 +175,17 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
 
     msg = EmailMessage()
     msg["Subject"] = assunto
-    msg["From"] = cfg["from"] or cfg["user"]
+
+    remetente = (cfg["from"] or cfg["user"]).strip()
+    msg["From"] = remetente
+
+    if cfg.get("reply_to"):
+        msg["Reply-To"] = cfg["reply_to"]
+
     msg["To"] = ", ".join(cfg["to"])
     if cfg["cc"]:
         msg["Cc"] = ", ".join(cfg["cc"])
+
     msg.set_content(corpo)
 
     destinos = cfg["to"] + cfg["cc"] + cfg["bcc"]
@@ -184,9 +197,13 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
                 server.starttls()
                 server.ehlo()
             server.login(cfg["user"], cfg["password"])
-            server.send_message(msg, from_addr=msg["From"], to_addrs=destinos)
+            server.send_message(msg, from_addr=remetente, to_addrs=destinos)
+
+        print(f"[EMAIL] OK nova demanda {codigo} para {destinos}")
         return True, "Email enviado"
+
     except Exception as e:
+        print(f"[EMAIL] ERRO nova demanda {codigo}: {repr(e)}")
         return False, f"Falha ao enviar email. {str(e)}"
 
 # =============================
@@ -668,7 +685,6 @@ def carregar_demandas(filtros=None):
                         query += " AND codigo = %s"
                         params.append(codigo)
 
-                    # Filtro por período (data_criacao)
                     dt_ini = filtros.get("data_ini")
                     dt_fim = filtros.get("data_fim")
                     if dt_ini:
@@ -738,7 +754,7 @@ def adicionar_demanda(dados):
                             dados.get("categoria", "Geral"),
                             dados.get("unidade", "Unid."),
                             bool(dados.get("urgencia", False)),
-                            None,  # removido do fluxo público
+                            None,
                             bool(dados.get("almoxarifado", False)),
                             dados.get("valor")
                         ))
@@ -751,7 +767,6 @@ def adicionar_demanda(dados):
 
                         conn.commit()
 
-                        # Envio de email (não bloqueia a criação)
                         ok_mail, msg_mail = enviar_email_nova_demanda({
                             "codigo": codigo_ok,
                             "solicitante": dados.get("solicitante", ""),
@@ -782,10 +797,6 @@ def adicionar_demanda(dados):
         return None
 
 def atualizar_demanda(demanda_id: int, dados: dict):
-    """
-    Atualiza SOMENTE:
-    status, almoxarifado, valor, observacoes
-    """
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -853,7 +864,6 @@ def excluir_demanda(demanda_id):
         return False
 
 def obter_estatisticas(filtros=None):
-    """Estatísticas (com filtro por período opcional)."""
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1381,7 +1391,6 @@ def pagina_solicitacao():
         Guarde este código para consultar o status posteriormente.
         """)
 
-        # Feedback do email
         if st.session_state.ultima_demanda_email_ok is True:
             st.info("📧 Notificação por email enviada.")
         elif st.session_state.ultima_demanda_email_ok is False:
@@ -2028,12 +2037,13 @@ SMTP_HOST: {ecfg.get("host")}
 SMTP_PORT: {ecfg.get("port")}
 SMTP_USER: {ecfg.get("user")}
 SMTP_STARTTLS: {ecfg.get("starttls")}
+SMTP_TIMEOUT: {ecfg.get("timeout")}
 MAIL_FROM: {ecfg.get("from")}
+MAIL_REPLY_TO: {ecfg.get("reply_to")}
 MAIL_TO: {", ".join(ecfg.get("to", []))}
 MAIL_CC: {", ".join(ecfg.get("cc", []))}
 MAIL_BCC: {", ".join(ecfg.get("bcc", []))}
 MAIL_SUBJECT_PREFIX: {ecfg.get("subject_prefix")}
-MAIL_SEND_TIMEOUT: {ecfg.get("timeout")}
         """.strip(), language="bash")
 
         st.markdown("---")
@@ -2041,7 +2051,7 @@ MAIL_SEND_TIMEOUT: {ecfg.get("timeout")}
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Versão do Sistema", "3.3")
+            st.metric("Versão do Sistema", "3.4")
             st.metric("Fuso Horário", "America/Fortaleza")
         with col2:
             st.metric("Design", "Comprovante Digital + Relatórios + Email")
@@ -2101,4 +2111,4 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.3")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.4")
