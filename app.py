@@ -48,13 +48,11 @@ def formatar_data_hora_fortaleza(dt: datetime, formato: str = "%d/%m/%Y %H:%M") 
     return converter_para_fortaleza(dt).strftime(formato)
 
 def _to_tz_aware_start(d: date) -> datetime:
-    """00:00 do dia no fuso Fortaleza."""
     if not d:
         return None
     return FORTALEZA_TZ.localize(datetime(d.year, d.month, d.day, 0, 0, 0))
 
 def _to_tz_aware_end_exclusive(d: date) -> datetime:
-    """Dia seguinte 00:00 no fuso Fortaleza. Útil para filtro < end."""
     if not d:
         return None
     dd = d + timedelta(days=1)
@@ -78,25 +76,24 @@ CORES_PRIORIDADE = {
 }
 
 # =============================
-# Email (variáveis de ambiente)
+# Email (variáveis Railway)
 # =============================
-# Configure no Railway:
 # SMTP_HOST=smtp-relay.brevo.com
-# SMTP_PORT=587
+# SMTP_PORT=587  (teste também 2525; ou 465 com SMTP_STARTTLS=false)
 # SMTP_USER=xxxx@smtp-brevo.com
-# SMTP_PASSWORD=sua_smtp_key   (fallback: SMTP_PASS)
+# SMTP_PASSWORD=sua_smtp_key  (fallback: SMTP_PASS)
 # SMTP_STARTTLS=true
-# MAIL_FROM=remetente@dominio.com
+# SMTP_FORCE_IPV4=true
+# SMTP_DEBUG=false
+# MAIL_FROM=paulo.ferreira@cogerh.com.br   (tem que ser remetente válido no Brevo ou domínio autenticado)
 # MAIL_TO=email1@dominio.com,email2@dominio.com
 # MAIL_CC=
 # MAIL_BCC=
 # MAIL_ON_NEW_DEMANDA=true
 # MAIL_SUBJECT_PREFIX=Sistema de Demandas GRBANABUIU
-# MAIL_SEND_TIMEOUT=60
-# SMTP_FORCE_IPV4=true
+# MAIL_SEND_TIMEOUT=20
 # MAIL_RETRIES=2
 # MAIL_RETRY_SLEEP=2
-# SMTP_DEBUG=false
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
@@ -110,10 +107,42 @@ def _env_int(name: str, default: int) -> int:
     except Exception:
         return default
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(str(os.environ.get(name, str(default))).strip().replace(",", "."))
+    except Exception:
+        return default
+
 def _env_list(name: str) -> list:
     raw = os.environ.get(name, "") or ""
     itens = [x.strip() for x in raw.replace(";", ",").split(",")]
     return [x for x in itens if x]
+
+def get_email_config() -> dict:
+    smtp_password = (
+        os.environ.get("SMTP_PASSWORD")
+        or os.environ.get("SMTP_PASS")
+        or ""
+    )
+
+    return {
+        "enabled_new": _env_bool("MAIL_ON_NEW_DEMANDA", True),
+        "host": os.environ.get("SMTP_HOST", "").strip(),
+        "port": _env_int("SMTP_PORT", 587),
+        "user": os.environ.get("SMTP_USER", "").strip(),
+        "password": smtp_password.strip(),
+        "starttls": _env_bool("SMTP_STARTTLS", True),
+        "force_ipv4": _env_bool("SMTP_FORCE_IPV4", False),
+        "debug": _env_bool("SMTP_DEBUG", False),
+        "from": (os.environ.get("MAIL_FROM") or "").strip(),
+        "to": _env_list("MAIL_TO"),
+        "cc": _env_list("MAIL_CC"),
+        "bcc": _env_list("MAIL_BCC"),
+        "subject_prefix": os.environ.get("MAIL_SUBJECT_PREFIX", "Sistema de Demandas").strip(),
+        "timeout": _env_int("MAIL_SEND_TIMEOUT", 20),
+        "retries": _env_int("MAIL_RETRIES", 0),
+        "retry_sleep": _env_float("MAIL_RETRY_SLEEP", 1.5),
+    }
 
 def _resolve_ipv4(host: str) -> str:
     infos = socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
@@ -121,33 +150,26 @@ def _resolve_ipv4(host: str) -> str:
         return host
     return infos[0][4][0]
 
-def get_email_config() -> dict:
-    smtp_password = (os.environ.get("SMTP_PASSWORD") or os.environ.get("SMTP_PASS") or "").strip()
+def _tcp_probe(host: str, port: int, timeout: int, force_ipv4: bool) -> tuple:
+    ip_usado = host
+    try:
+        if force_ipv4:
+            ip_usado = _resolve_ipv4(host)
+        else:
+            ip_usado = host
 
-    return {
-        "enabled_new": _env_bool("MAIL_ON_NEW_DEMANDA", True),
-        "host": os.environ.get("SMTP_HOST", "").strip(),
-        "port": _env_int("SMTP_PORT", 587),
-        "user": os.environ.get("SMTP_USER", "").strip(),
-        "password": smtp_password,
-        "starttls": _env_bool("SMTP_STARTTLS", True),
-        "from": (os.environ.get("MAIL_FROM") or "").strip(),
-        "to": _env_list("MAIL_TO"),
-        "cc": _env_list("MAIL_CC"),
-        "bcc": _env_list("MAIL_BCC"),
-        "subject_prefix": os.environ.get("MAIL_SUBJECT_PREFIX", "Sistema de Demandas").strip(),
-        "timeout": _env_int("MAIL_SEND_TIMEOUT", 60),
-
-        "force_ipv4": _env_bool("SMTP_FORCE_IPV4", True),
-        "retries": _env_int("MAIL_RETRIES", 2),
-        "retry_sleep": _env_int("MAIL_RETRY_SLEEP", 2),
-        "debug": _env_bool("SMTP_DEBUG", False),
-    }
+        with socket.create_connection((ip_usado, port), timeout=timeout):
+            return True, f"TCP OK em {ip_usado}:{port}", ip_usado
+    except socket.gaierror as e:
+        return False, f"DNS falhou para {host}. {e}", ip_usado
+    except TimeoutError as e:
+        return False, f"TCP timeout em {ip_usado}:{port}. {e}", ip_usado
+    except OSError as e:
+        return False, f"TCP erro em {ip_usado}:{port}. {e}", ip_usado
 
 def enviar_email_nova_demanda(dados_email: dict) -> tuple:
     """
-    dados_email esperado:
-    codigo, solicitante, departamento, local, prioridade, item, quantidade, unidade, urgencia, categoria, observacoes
+    Envia notificação por email. Retorna (ok:bool, msg:str).
     """
     cfg = get_email_config()
 
@@ -181,7 +203,11 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
 
     msg = EmailMessage()
     msg["Subject"] = assunto
-    msg["From"] = cfg["from"] or cfg["user"]
+
+    # Remetente: se MAIL_FROM não vier, cai no SMTP_USER
+    msg_from = cfg["from"] or cfg["user"]
+    msg["From"] = msg_from
+
     msg["To"] = ", ".join(cfg["to"])
     if cfg["cc"]:
         msg["Cc"] = ", ".join(cfg["cc"])
@@ -189,41 +215,52 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
 
     destinos = cfg["to"] + cfg["cc"] + cfg["bcc"]
 
-    host_to_connect = cfg["host"]
-    if cfg["force_ipv4"]:
-        try:
-            host_to_connect = _resolve_ipv4(cfg["host"])
-        except Exception:
-            host_to_connect = cfg["host"]
+    # Diagnóstico antes do SMTP
+    ok_tcp, detalhe_tcp, ip_usado = _tcp_probe(
+        host=cfg["host"],
+        port=cfg["port"],
+        timeout=cfg["timeout"],
+        force_ipv4=cfg["force_ipv4"]
+    )
+    if not ok_tcp:
+        return False, f"Falha ao enviar email. {detalhe_tcp}"
 
     last_err = None
+    tentativas = max(0, int(cfg["retries"])) + 1
 
-    for tentativa in range(cfg["retries"] + 1):
+    for tentativa in range(tentativas):
         try:
             socket.setdefaulttimeout(cfg["timeout"])
 
-            with smtplib.SMTP(host_to_connect, cfg["port"], timeout=cfg["timeout"]) as server:
+            # Se forçar IPv4, conecta no IP. Mas o STARTTLS deve usar server_hostname do host
+            connect_host = ip_usado if cfg["force_ipv4"] else cfg["host"]
+
+            with smtplib.SMTP(connect_host, cfg["port"], timeout=cfg["timeout"]) as server:
                 if cfg["debug"]:
                     server.set_debuglevel(1)
 
                 server.ehlo()
+
                 if cfg["starttls"]:
                     context = ssl.create_default_context()
-                    server.starttls(context=context)
+                    try:
+                        server.starttls(context=context, server_hostname=cfg["host"])
+                    except TypeError:
+                        server.starttls(context=context)
                     server.ehlo()
 
                 server.login(cfg["user"], cfg["password"])
-                server.send_message(msg, from_addr=msg["From"], to_addrs=destinos)
+                server.send_message(msg, from_addr=msg_from, to_addrs=destinos)
 
-            return True, "Email enviado"
+            return True, f"Email enviado. {detalhe_tcp}"
 
         except Exception as e:
             last_err = e
-            if tentativa < cfg["retries"]:
-                time.sleep(cfg["retry_sleep"])
+            if tentativa < tentativas - 1:
+                time.sleep(float(cfg["retry_sleep"]))
                 continue
 
-    return False, f"Falha ao enviar email. {str(last_err)}"
+    return False, f"Falha ao enviar email. {detalhe_tcp}. Erro SMTP: {str(last_err)}"
 
 # =============================
 # Conexão Railway Postgres
@@ -417,7 +454,6 @@ def verificar_e_atualizar_tabela_demandas():
                     alters.append("ADD COLUMN unidade VARCHAR(50) DEFAULT 'Unid.'")
                 if "codigo" not in existentes:
                     alters.append("ADD COLUMN codigo VARCHAR(20)")
-
                 if "almoxarifado" not in existentes:
                     alters.append("ADD COLUMN almoxarifado BOOLEAN DEFAULT FALSE")
                 if "valor" not in existentes:
@@ -1374,7 +1410,7 @@ def pagina_inicial():
         ">
             <h3 style="color: #2c3e50; margin-top: 0;">🔧 Área Administrativa</h3>
             <p style="color: #555; line-height: 1.6;">
-                Acesso para supervisores e administradores autorizados.
+                Acesso para supervisores e administradores.
                 Gestão completa de demandas, usuários e relatórios.
             </p>
         </div>
@@ -2036,7 +2072,7 @@ User: {cfg.get('user')}
 Port: {cfg.get('port')}
 SSL Mode: {cfg.get('sslmode')}
 Timezone: America/Fortaleza
-        """, language="bash")
+        """.strip(), language="bash")
 
         if st.button("🔄 Testar Conexão com Banco de Dados", use_container_width=True):
             with st.spinner("Testando conexão..."):
@@ -2056,16 +2092,16 @@ SMTP_HOST: {ecfg.get("host")}
 SMTP_PORT: {ecfg.get("port")}
 SMTP_USER: {ecfg.get("user")}
 SMTP_STARTTLS: {ecfg.get("starttls")}
+SMTP_FORCE_IPV4: {ecfg.get("force_ipv4")}
+SMTP_DEBUG: {ecfg.get("debug")}
 MAIL_FROM: {ecfg.get("from")}
 MAIL_TO: {", ".join(ecfg.get("to", []))}
 MAIL_CC: {", ".join(ecfg.get("cc", []))}
 MAIL_BCC: {", ".join(ecfg.get("bcc", []))}
 MAIL_SUBJECT_PREFIX: {ecfg.get("subject_prefix")}
 MAIL_SEND_TIMEOUT: {ecfg.get("timeout")}
-SMTP_FORCE_IPV4: {ecfg.get("force_ipv4")}
 MAIL_RETRIES: {ecfg.get("retries")}
 MAIL_RETRY_SLEEP: {ecfg.get("retry_sleep")}
-SMTP_DEBUG: {ecfg.get("debug")}
         """.strip(), language="bash")
 
         st.markdown("---")
@@ -2073,7 +2109,7 @@ SMTP_DEBUG: {ecfg.get("debug")}
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Versão do Sistema", "3.3")
+            st.metric("Versão do Sistema", "3.4")
             st.metric("Fuso Horário", "America/Fortaleza")
         with col2:
             st.metric("Design", "Comprovante Digital + Relatórios + Email")
@@ -2133,4 +2169,4 @@ if st.session_state.pagina_atual in ["admin", "solicitacao"]:
         st.sidebar.warning("⚠️ DATABASE_URL não encontrada")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.3")
+    st.sidebar.caption(f"© {datetime.now().year} - Sistema de Demandas - GRBANABUIU v3.4")
