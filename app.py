@@ -1571,12 +1571,15 @@ def pagina_solicitacao():
                     help="Selecione o local solicitante"
                 )
                 categoria = st.selectbox(
-                    "📂 Categoria",
-                    ["Selecione", "Alimentos", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"]
+                    "📂 Categoria*",
+                    ["Alimentos", "Água potável", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"],
+                    index=None,  # Deixa vazio inicialmente
+                    placeholder="Escolha uma categoria",
+                    help="Selecione a categoria solicitante"
                 )
 
             with col2:
-                item = st.text_area("📝 Descrição da Demanda*", placeholder="Descreva detalhadamente o que está solicitando...", height=120)
+                item = st.text_input("📝 Descrição da Demanda*", placeholder="Descreva a solicitação", height=30)
                 quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
                 unidade = st.selectbox(
                     "📏 Unidade*",
