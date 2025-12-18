@@ -11,20 +11,33 @@ import streamlit as st
 FORTALEZA_TZ = pytz.timezone("America/Fortaleza")
 
 # =============================
-# Cores para status e prioridade
+# Cores para o tema Cogerh/Água
 # =============================
+# Paleta: Azul Cogerh (#0077B6), Ciano Água (#48CAE4), Laranja Alerta (#FCA311)
+TEMA_CORES = {
+    "primary": "#0077B6",  # Azul Principal
+    "secondary": "#F0F8FF", # Fundo de Cards/Secundário
+    "info": "#48CAE4",     # Ciano Água
+    "warning": "#FCA311",  # Laranja Alerta
+    "danger": "#D62828",   # Vermelho
+    "success": "#00A878",  # Verde
+    "text": "#1A1A1A",     # Texto Principal
+    "background": "#FFFFFF", # Fundo da Página
+}
+
+# Cores para status e prioridade
 CORES_STATUS = {
-    "Pendente": "#FF6B6B",
-    "Em andamento": "#4ECDC4",
-    "Concluída": "#06D6A0",
+    "Pendente": TEMA_CORES["danger"],
+    "Em andamento": TEMA_CORES["info"],
+    "Concluída": TEMA_CORES["success"],
     "Cancelada": "#B0B0B0"
 }
 
 CORES_PRIORIDADE = {
-    "Urgente": "#FF6B6B",
-    "Alta": "#FF9E6D",
-    "Média": "#FFD166",
-    "Baixa": "#118AB2"
+    "Urgente": TEMA_CORES["danger"],
+    "Alta": TEMA_CORES["warning"],
+    "Média": TEMA_CORES["info"],
+    "Baixa": TEMA_CORES["success"]
 }
 
 # =============================
