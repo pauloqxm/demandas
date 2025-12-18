@@ -1558,8 +1558,10 @@ def pagina_solicitacao():
                 solicitante = st.text_input("👤 Nome do Solicitante*", placeholder="Seu nome completo")
                 departamento = st.selectbox(
                     "🏢 Setor*",
-                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
-                    placeholder="Escolha um setor"
+                    ["Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
+                    index=None,  # Deixa vazio inicialmente
+                    placeholder="Escolha um departamento",
+                    help="Selecione o departamento solicitante"
                 )
                 local = st.selectbox(
                     "📍 Local*",
