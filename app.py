@@ -11,11 +11,10 @@ from urllib.parse import urlparse
 import hashlib
 import pytz
 import time
-
-import socket
-import ssl
 import smtplib
 from email.message import EmailMessage
+import socket
+import requests
 
 # =============================
 # Configuração da página
@@ -32,8 +31,10 @@ st.set_page_config(
 # =============================
 FORTALEZA_TZ = pytz.timezone("America/Fortaleza")
 
+
 def agora_fortaleza() -> datetime:
     return datetime.now(FORTALEZA_TZ)
+
 
 def converter_para_fortaleza(dt: datetime) -> datetime:
     if dt is None:
@@ -42,21 +43,25 @@ def converter_para_fortaleza(dt: datetime) -> datetime:
         dt = pytz.utc.localize(dt)
     return dt.astimezone(FORTALEZA_TZ)
 
+
 def formatar_data_hora_fortaleza(dt: datetime, formato: str = "%d/%m/%Y %H:%M") -> str:
     if not dt:
         return ""
     return converter_para_fortaleza(dt).strftime(formato)
+
 
 def _to_tz_aware_start(d: date) -> datetime:
     if not d:
         return None
     return FORTALEZA_TZ.localize(datetime(d.year, d.month, d.day, 0, 0, 0))
 
+
 def _to_tz_aware_end_exclusive(d: date) -> datetime:
     if not d:
         return None
     dd = d + timedelta(days=1)
     return FORTALEZA_TZ.localize(datetime(dd.year, dd.month, dd.day, 0, 0, 0))
+
 
 # =============================
 # Cores para status
@@ -76,24 +81,36 @@ CORES_PRIORIDADE = {
 }
 
 # =============================
-# Email (variáveis Railway)
+# Email (SMTP + fallback Brevo API)
 # =============================
+# Variáveis sugeridas no Railway
+#
+# SMTP (opcional, pode manter se funcionar em algum ambiente)
 # SMTP_HOST=smtp-relay.brevo.com
-# SMTP_PORT=587  (teste também 2525; ou 465 com SMTP_STARTTLS=false)
+# SMTP_PORT=587
 # SMTP_USER=xxxx@smtp-brevo.com
-# SMTP_PASSWORD=sua_smtp_key  (fallback: SMTP_PASS)
+# SMTP_PASSWORD=sua_smtp_key (fallback: SMTP_PASS)
 # SMTP_STARTTLS=true
-# SMTP_FORCE_IPV4=true
-# SMTP_DEBUG=false
-# MAIL_FROM=paulo.ferreira@cogerh.com.br   (tem que ser remetente válido no Brevo ou domínio autenticado)
+# MAIL_FROM=paulo.ferreira@cogerh.com.br
 # MAIL_TO=email1@dominio.com,email2@dominio.com
 # MAIL_CC=
 # MAIL_BCC=
 # MAIL_ON_NEW_DEMANDA=true
 # MAIL_SUBJECT_PREFIX=Sistema de Demandas GRBANABUIU
 # MAIL_SEND_TIMEOUT=20
-# MAIL_RETRIES=2
-# MAIL_RETRY_SLEEP=2
+#
+# Brevo API (recomendado no Railway, pois usa HTTPS 443 e evita timeout do 587)
+# BREVO_API_KEY=SEU_TOKEN_API_V3
+# BREVO_SENDER=paulo.ferreira@cogerh.com.br
+# BREVO_SENDER_NAME=Sistema de Demandas
+# BREVO_TO=pauloqxm@gmail.com,outro@email.com
+# BREVO_TIMEOUT=20
+#
+# Estratégia
+# 1) Se BREVO_API_KEY existir, usa API primeiro (mais confiável no Railway)
+# 2) Se não existir, tenta SMTP
+# 3) Se SMTP falhar, tenta API como fallback se existir
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
@@ -101,87 +118,139 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return default
     return str(v).strip().lower() in ("1", "true", "yes", "y", "sim", "on")
 
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(str(os.environ.get(name, str(default))).strip())
     except Exception:
         return default
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(str(os.environ.get(name, str(default))).strip().replace(",", "."))
-    except Exception:
-        return default
 
 def _env_list(name: str) -> list:
     raw = os.environ.get(name, "") or ""
     itens = [x.strip() for x in raw.replace(";", ",").split(",")]
     return [x for x in itens if x]
 
-def get_email_config() -> dict:
-    smtp_password = (
-        os.environ.get("SMTP_PASSWORD")
-        or os.environ.get("SMTP_PASS")
-        or ""
-    )
 
+def _tcp_probe(host: str, port: int, timeout: int = 5) -> tuple:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True, "OK"
+    except Exception as e:
+        return False, str(e)
+
+
+def get_email_config() -> dict:
+    smtp_password = (os.environ.get("SMTP_PASSWORD") or os.environ.get("SMTP_PASS") or "").strip()
     return {
         "enabled_new": _env_bool("MAIL_ON_NEW_DEMANDA", True),
         "host": os.environ.get("SMTP_HOST", "").strip(),
         "port": _env_int("SMTP_PORT", 587),
         "user": os.environ.get("SMTP_USER", "").strip(),
-        "password": smtp_password.strip(),
+        "password": smtp_password,
         "starttls": _env_bool("SMTP_STARTTLS", True),
-        "force_ipv4": _env_bool("SMTP_FORCE_IPV4", False),
-        "debug": _env_bool("SMTP_DEBUG", False),
         "from": (os.environ.get("MAIL_FROM") or "").strip(),
         "to": _env_list("MAIL_TO"),
         "cc": _env_list("MAIL_CC"),
         "bcc": _env_list("MAIL_BCC"),
         "subject_prefix": os.environ.get("MAIL_SUBJECT_PREFIX", "Sistema de Demandas").strip(),
         "timeout": _env_int("MAIL_SEND_TIMEOUT", 20),
-        "retries": _env_int("MAIL_RETRIES", 0),
-        "retry_sleep": _env_float("MAIL_RETRY_SLEEP", 1.5),
     }
 
-def _resolve_ipv4(host: str) -> str:
-    infos = socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
-    if not infos:
-        return host
-    return infos[0][4][0]
 
-def _tcp_probe(host: str, port: int, timeout: int, force_ipv4: bool) -> tuple:
-    ip_usado = host
+def get_brevo_config() -> dict:
+    return {
+        "api_key": (os.environ.get("BREVO_API_KEY") or "").strip(),
+        "sender_email": (os.environ.get("BREVO_SENDER") or "").strip(),
+        "sender_name": (os.environ.get("BREVO_SENDER_NAME") or "Sistema de Demandas").strip(),
+        "to": _env_list("BREVO_TO") or _env_list("MAIL_TO"),
+        "timeout": _env_int("BREVO_TIMEOUT", 20),
+        "subject_prefix": os.environ.get("MAIL_SUBJECT_PREFIX", "Sistema de Demandas").strip(),
+    }
+
+
+def enviar_email_brevo_api(assunto: str, corpo_texto: str) -> tuple:
+    cfg = get_brevo_config()
+    if not cfg["api_key"]:
+        return False, "BREVO_API_KEY não configurada"
+    if not cfg["sender_email"]:
+        return False, "BREVO_SENDER não configurado"
+    if not cfg["to"]:
+        return False, "BREVO_TO vazio"
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "accept": "application/json",
+        "api-key": cfg["api_key"],
+        "content-type": "application/json",
+    }
+    payload = {
+        "sender": {"name": cfg["sender_name"], "email": cfg["sender_email"]},
+        "to": [{"email": e} for e in cfg["to"]],
+        "subject": assunto,
+        "textContent": corpo_texto,
+    }
+
     try:
-        if force_ipv4:
-            ip_usado = _resolve_ipv4(host)
-        else:
-            ip_usado = host
+        r = requests.post(url, headers=headers, json=payload, timeout=cfg["timeout"])
+        if 200 <= r.status_code < 300:
+            return True, "Brevo API OK"
+        return False, f"Brevo API erro {r.status_code}. {r.text}"
+    except Exception as e:
+        return False, f"Brevo API falhou. {str(e)}"
 
-        with socket.create_connection((ip_usado, port), timeout=timeout):
-            return True, f"TCP OK em {ip_usado}:{port}", ip_usado
-    except socket.gaierror as e:
-        return False, f"DNS falhou para {host}. {e}", ip_usado
-    except TimeoutError as e:
-        return False, f"TCP timeout em {ip_usado}:{port}. {e}", ip_usado
-    except OSError as e:
-        return False, f"TCP erro em {ip_usado}:{port}. {e}", ip_usado
 
-def enviar_email_nova_demanda(dados_email: dict) -> tuple:
-    """
-    Envia notificação por email. Retorna (ok:bool, msg:str).
-    """
+def enviar_email_smtp(assunto: str, corpo: str) -> tuple:
     cfg = get_email_config()
 
-    if not cfg["enabled_new"]:
-        return True, "Envio de email desativado por variável"
     if not cfg["host"] or not cfg["user"] or not cfg["password"]:
         return False, "SMTP não configurado nas variáveis"
     if not cfg["to"]:
         return False, "MAIL_TO vazio"
 
+    mail_from = cfg["from"] or cfg["user"]
+
+    # Probe TCP para erro mais claro
+    ok_tcp, msg_tcp = _tcp_probe(cfg["host"], cfg["port"], timeout=min(6, int(cfg["timeout"] or 20)))
+    if not ok_tcp:
+        return False, f"TCP timeout em {cfg['host']}:{cfg['port']}. {msg_tcp}"
+
+    msg = EmailMessage()
+    msg["Subject"] = assunto
+    msg["From"] = mail_from
+    msg["To"] = ", ".join(cfg["to"])
+    if cfg["cc"]:
+        msg["Cc"] = ", ".join(cfg["cc"])
+    msg.set_content(corpo)
+
+    destinos = cfg["to"] + cfg["cc"] + cfg["bcc"]
+
+    try:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=cfg["timeout"]) as server:
+            server.ehlo()
+            if cfg["starttls"]:
+                server.starttls()
+                server.ehlo()
+            server.login(cfg["user"], cfg["password"])
+            server.send_message(msg, from_addr=mail_from, to_addrs=destinos)
+        return True, "SMTP OK"
+    except Exception as e:
+        return False, str(e)
+
+
+def enviar_email_nova_demanda(dados_email: dict) -> tuple:
+    """
+    dados_email esperado:
+    codigo, solicitante, departamento, local, prioridade, item, quantidade, unidade, urgencia, categoria, observacoes
+    """
+    cfg_mail = get_email_config()
+    if not cfg_mail["enabled_new"]:
+        return True, "Envio de email desativado por variável"
+
     codigo = dados_email.get("codigo", "SEM-COD")
-    assunto = f"{cfg['subject_prefix']} | Nova demanda {codigo}"
+
+    subject_prefix = (os.environ.get("MAIL_SUBJECT_PREFIX") or "Sistema de Demandas").strip()
+    assunto = f"{subject_prefix} | Nova demanda {codigo}"
 
     urg = "Sim" if bool(dados_email.get("urgencia", False)) else "Não"
     obs = dados_email.get("observacoes") or "Sem observações."
@@ -201,66 +270,34 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
         f"{obs}\n"
     )
 
-    msg = EmailMessage()
-    msg["Subject"] = assunto
+    brevo_cfg = get_brevo_config()
+    brevo_ok = bool(brevo_cfg.get("api_key"))
 
-    # Remetente: se MAIL_FROM não vier, cai no SMTP_USER
-    msg_from = cfg["from"] or cfg["user"]
-    msg["From"] = msg_from
+    # Preferir API no Railway quando configurada
+    if brevo_ok:
+        ok_api, msg_api = enviar_email_brevo_api(assunto, corpo)
+        if ok_api:
+            return True, msg_api
+        # Se API falhar, tenta SMTP como fallback
+        ok_smtp, msg_smtp = enviar_email_smtp(assunto, corpo)
+        if ok_smtp:
+            return True, f"API falhou, mas SMTP funcionou. {msg_smtp}"
+        return False, f"API falhou. {msg_api}. SMTP também falhou. {msg_smtp}"
 
-    msg["To"] = ", ".join(cfg["to"])
-    if cfg["cc"]:
-        msg["Cc"] = ", ".join(cfg["cc"])
-    msg.set_content(corpo)
+    # Sem API configurada, tenta SMTP
+    ok_smtp, msg_smtp = enviar_email_smtp(assunto, corpo)
+    if ok_smtp:
+        return True, msg_smtp
 
-    destinos = cfg["to"] + cfg["cc"] + cfg["bcc"]
+    # Se SMTP falhar e tiver API, tenta fallback
+    if brevo_ok:
+        ok_api, msg_api = enviar_email_brevo_api(assunto, corpo)
+        if ok_api:
+            return True, f"SMTP falhou, mas API funcionou. {msg_api}"
+        return False, f"SMTP falhou. {msg_smtp}. API também falhou. {msg_api}"
 
-    # Diagnóstico antes do SMTP
-    ok_tcp, detalhe_tcp, ip_usado = _tcp_probe(
-        host=cfg["host"],
-        port=cfg["port"],
-        timeout=cfg["timeout"],
-        force_ipv4=cfg["force_ipv4"]
-    )
-    if not ok_tcp:
-        return False, f"Falha ao enviar email. {detalhe_tcp}"
+    return False, f"Falha ao enviar email. {msg_smtp}"
 
-    last_err = None
-    tentativas = max(0, int(cfg["retries"])) + 1
-
-    for tentativa in range(tentativas):
-        try:
-            socket.setdefaulttimeout(cfg["timeout"])
-
-            # Se forçar IPv4, conecta no IP. Mas o STARTTLS deve usar server_hostname do host
-            connect_host = ip_usado if cfg["force_ipv4"] else cfg["host"]
-
-            with smtplib.SMTP(connect_host, cfg["port"], timeout=cfg["timeout"]) as server:
-                if cfg["debug"]:
-                    server.set_debuglevel(1)
-
-                server.ehlo()
-
-                if cfg["starttls"]:
-                    context = ssl.create_default_context()
-                    try:
-                        server.starttls(context=context, server_hostname=cfg["host"])
-                    except TypeError:
-                        server.starttls(context=context)
-                    server.ehlo()
-
-                server.login(cfg["user"], cfg["password"])
-                server.send_message(msg, from_addr=msg_from, to_addrs=destinos)
-
-            return True, f"Email enviado. {detalhe_tcp}"
-
-        except Exception as e:
-            last_err = e
-            if tentativa < tentativas - 1:
-                time.sleep(float(cfg["retry_sleep"]))
-                continue
-
-    return False, f"Falha ao enviar email. {detalhe_tcp}. Erro SMTP: {str(last_err)}"
 
 # =============================
 # Conexão Railway Postgres
@@ -271,11 +308,13 @@ DATABASE_URL = (
     or os.environ.get("DATABASE_URL")
 )
 
+
 def _safe_st_secrets_get(key: str, default=None):
     try:
         return st.secrets.get(key, default)
     except Exception:
         return default
+
 
 def get_db_config():
     if DATABASE_URL:
@@ -298,6 +337,7 @@ def get_db_config():
         "sslmode": os.environ.get("DB_SSLMODE") or _safe_st_secrets_get("DB_SSLMODE", "prefer"),
     }
 
+
 @contextmanager
 def get_db_connection():
     config = get_db_config()
@@ -318,6 +358,7 @@ def get_db_connection():
         if conn:
             conn.close()
 
+
 def test_db_connection():
     try:
         with get_db_connection() as conn:
@@ -328,14 +369,17 @@ def test_db_connection():
     except Exception as e:
         return False, f"❌ Falha na conexão: {str(e)}"
 
+
 # =============================
 # Segurança e auth
 # =============================
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
+
 def verificar_senha(senha_digitada: str, senha_hash: str) -> bool:
     return hash_password(senha_digitada) == senha_hash
+
 
 # =============================
 # JSON seguro
@@ -351,8 +395,10 @@ def json_safe(obj):
         return float(obj)
     return obj
 
+
 def dumps_safe(payload) -> str:
     return json.dumps(json_safe(payload), ensure_ascii=False, default=str)
+
 
 # =============================
 # Migrações / init DB
@@ -426,6 +472,7 @@ def verificar_e_atualizar_tabela_usuarios():
     except Exception as e:
         return False, f"Erro usuarios: {str(e)}"
 
+
 def verificar_e_atualizar_tabela_demandas():
     try:
         with get_db_connection() as conn:
@@ -454,6 +501,7 @@ def verificar_e_atualizar_tabela_demandas():
                     alters.append("ADD COLUMN unidade VARCHAR(50) DEFAULT 'Unid.'")
                 if "codigo" not in existentes:
                     alters.append("ADD COLUMN codigo VARCHAR(20)")
+
                 if "almoxarifado" not in existentes:
                     alters.append("ADD COLUMN almoxarifado BOOLEAN DEFAULT FALSE")
                 if "valor" not in existentes:
@@ -479,6 +527,7 @@ def verificar_e_atualizar_tabela_demandas():
                 return True, "Tabela demandas OK."
     except Exception as e:
         return False, f"Erro demandas: {str(e)}"
+
 
 def init_database():
     try:
@@ -551,6 +600,7 @@ def init_database():
     except Exception as e:
         return False, f"❌ Erro init: {str(e)}"
 
+
 # =============================
 # Auth usuários
 # =============================
@@ -574,6 +624,7 @@ def autenticar_usuario(username, senha):
     except Exception as e:
         st.error(f"Erro autenticação: {str(e)}")
         return None
+
 
 def criar_usuario(dados_usuario):
     try:
@@ -607,6 +658,7 @@ def criar_usuario(dados_usuario):
     except Exception as e:
         return False, f"Erro criar usuário: {str(e)}"
 
+
 def listar_usuarios():
     try:
         with get_db_connection() as conn:
@@ -624,6 +676,7 @@ def listar_usuarios():
     except Exception as e:
         st.error(f"Erro listar usuários: {str(e)}")
         return []
+
 
 def atualizar_usuario(usuario_id, dados_atualizados):
     try:
@@ -650,6 +703,7 @@ def atualizar_usuario(usuario_id, dados_atualizados):
     except Exception as e:
         return False, f"Erro atualizar usuário: {str(e)}"
 
+
 def desativar_usuario(usuario_id):
     try:
         if usuario_id == 1:
@@ -662,6 +716,7 @@ def desativar_usuario(usuario_id):
                 return True, "Usuário desativado."
     except Exception as e:
         return False, f"Erro desativar usuário: {str(e)}"
+
 
 # =============================
 # Código ddmmaa-xx
@@ -676,6 +731,7 @@ def gerar_codigo_demanda(cur) -> str:
     max_seq = cur.fetchone()[0] or 0
     return f"{prefixo}-{(max_seq + 1):02d}"
 
+
 def normalizar_busca_codigo(texto: str) -> str:
     if not texto:
         return ""
@@ -684,6 +740,7 @@ def normalizar_busca_codigo(texto: str) -> str:
     if len(s) == 8 and s.isdigit():
         return f"{s[:6]}-{s[6:]}"
     return s
+
 
 # =============================
 # Demandas
@@ -763,6 +820,7 @@ def carregar_demandas(filtros=None):
         st.error(f"Erro ao carregar demandas: {str(e)}")
         return []
 
+
 def carregar_historico_demanda(demanda_id: int):
     try:
         with get_db_connection() as conn:
@@ -781,6 +839,7 @@ def carregar_historico_demanda(demanda_id: int):
     except Exception as e:
         st.warning(f"Não foi possível carregar histórico: {str(e)}")
         return []
+
 
 def adicionar_demanda(dados):
     try:
@@ -851,6 +910,7 @@ def adicionar_demanda(dados):
         st.error(f"Erro ao adicionar demanda: {str(e)}")
         return None
 
+
 def atualizar_demanda(demanda_id: int, dados: dict):
     try:
         with get_db_connection() as conn:
@@ -892,6 +952,7 @@ def atualizar_demanda(demanda_id: int, dados: dict):
         st.error(f"Erro ao atualizar demanda: {str(e)}")
         return False
 
+
 def excluir_demanda(demanda_id):
     try:
         with get_db_connection() as conn:
@@ -917,6 +978,7 @@ def excluir_demanda(demanda_id):
     except Exception as e:
         st.error(f"Erro ao excluir demanda: {str(e)}")
         return False
+
 
 def obter_estatisticas(filtros=None):
     try:
@@ -998,8 +1060,9 @@ def obter_estatisticas(filtros=None):
         st.error(f"Erro ao obter estatísticas: {str(e)}")
         return {}
 
+
 # =============================
-# UI helper: formatação BR simples
+# UI helper
 # =============================
 def formatar_brl(valor) -> str:
     try:
@@ -1010,8 +1073,10 @@ def formatar_brl(valor) -> str:
     s = s.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {s}"
 
+
 def dataframe_to_csv_br(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
+
 
 # =============================
 # UI helper: Comprovante
@@ -1198,6 +1263,7 @@ def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
 
     st.markdown("---")
 
+
 def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados", mostrar_campos_admin: bool = False):
     st.subheader(titulo)
 
@@ -1224,6 +1290,7 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados", m
             expanded=False
         ):
             render_comprovante_demanda(d, mostrar_campos_admin=mostrar_campos_admin)
+
 
 # =============================
 # Relatório Mensal (Admin)
@@ -1353,6 +1420,7 @@ def render_relatorio_mensal_automatico():
     else:
         st.info("Sem demandas no mês selecionado.")
 
+
 # =============================
 # Páginas
 # =============================
@@ -1423,6 +1491,7 @@ def pagina_inicial():
     st.markdown("---")
     st.caption(f"🕒 Horário atual do sistema: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Fortaleza)")
 
+
 def pagina_solicitacao():
     st.header("📝 Solicitação e Consulta")
     agora = agora_fortaleza()
@@ -1447,7 +1516,7 @@ def pagina_solicitacao():
         """)
 
         if st.session_state.ultima_demanda_email_ok is True:
-            st.info("📧 Notificação por email enviada.")
+            st.info(f"📧 Notificação enviada. {st.session_state.ultima_demanda_email_msg or ''}".strip())
         elif st.session_state.ultima_demanda_email_ok is False:
             st.warning(f"📧 A demanda foi registrada, mas o email falhou. {st.session_state.ultima_demanda_email_msg}")
 
@@ -1586,6 +1655,7 @@ def pagina_solicitacao():
         st.session_state.pagina_atual = "inicio"
         st.rerun()
 
+
 def pagina_login_admin():
     st.title("🔧 Área Administrativa")
     st.markdown("---")
@@ -1634,6 +1704,7 @@ def pagina_login_admin():
     if st.button("← Voltar ao Início", use_container_width=True):
         st.session_state.pagina_atual = "inicio"
         st.rerun()
+
 
 def pagina_gerenciar_usuarios():
     st.header("👥 Gerenciamento de Usuários")
@@ -1747,6 +1818,7 @@ def pagina_gerenciar_usuarios():
                     else:
                         st.error(f"❌ {msg}")
 
+
 def pagina_admin():
     if not st.session_state.get("usuario_logado", False):
         st.session_state.pagina_atual = "login_admin"
@@ -1811,8 +1883,8 @@ def pagina_admin():
     st.session_state.filtro_data_fim = data_fim
 
     st.sidebar.caption("O filtro usa data de criação da demanda.")
-
     st.sidebar.markdown("---")
+
     if st.sidebar.button("🚪 Logout", use_container_width=True):
         for k in ["usuario_logado", "usuario_id", "usuario_nome", "usuario_username", "usuario_nivel", "usuario_admin"]:
             st.session_state.pop(k, None)
@@ -2083,25 +2155,31 @@ Timezone: America/Fortaleza
                     st.error(msg)
 
         st.markdown("---")
-        st.subheader("📧 Configuração de email (por variáveis)")
+        st.subheader("📧 Configuração de email (variáveis)")
+        st.caption("Preferência: Brevo API. SMTP fica como fallback se quiser.")
+
         ecfg = get_email_config()
-        st.caption("Tudo aqui vem das variables do Railway.")
+        bcfg = get_brevo_config()
+
         st.code(f"""
 MAIL_ON_NEW_DEMANDA: {ecfg.get("enabled_new")}
+MAIL_SUBJECT_PREFIX: {ecfg.get("subject_prefix")}
+
 SMTP_HOST: {ecfg.get("host")}
 SMTP_PORT: {ecfg.get("port")}
 SMTP_USER: {ecfg.get("user")}
 SMTP_STARTTLS: {ecfg.get("starttls")}
-SMTP_FORCE_IPV4: {ecfg.get("force_ipv4")}
-SMTP_DEBUG: {ecfg.get("debug")}
 MAIL_FROM: {ecfg.get("from")}
 MAIL_TO: {", ".join(ecfg.get("to", []))}
 MAIL_CC: {", ".join(ecfg.get("cc", []))}
 MAIL_BCC: {", ".join(ecfg.get("bcc", []))}
-MAIL_SUBJECT_PREFIX: {ecfg.get("subject_prefix")}
 MAIL_SEND_TIMEOUT: {ecfg.get("timeout")}
-MAIL_RETRIES: {ecfg.get("retries")}
-MAIL_RETRY_SLEEP: {ecfg.get("retry_sleep")}
+
+BREVO_API_KEY: {"CONFIGURADA" if bool(bcfg.get("api_key")) else "NAO"}
+BREVO_SENDER: {bcfg.get("sender_email")}
+BREVO_SENDER_NAME: {bcfg.get("sender_name")}
+BREVO_TO: {", ".join(bcfg.get("to", []))}
+BREVO_TIMEOUT: {bcfg.get("timeout")}
         """.strip(), language="bash")
 
         st.markdown("---")
@@ -2112,8 +2190,9 @@ MAIL_RETRY_SLEEP: {ecfg.get("retry_sleep")}
             st.metric("Versão do Sistema", "3.4")
             st.metric("Fuso Horário", "America/Fortaleza")
         with col2:
-            st.metric("Design", "Comprovante Digital + Relatórios + Email")
+            st.metric("Design", "Comprovante Digital + Relatórios + Email API")
             st.metric("Usuários Online", "1")
+
 
 # =============================
 # Boot do sistema
@@ -2152,7 +2231,7 @@ else:
     st.rerun()
 
 # =============================
-# Rodapé e informações de debug
+# Rodapé e debug
 # =============================
 if st.session_state.pagina_atual in ["admin", "solicitacao"]:
     st.sidebar.markdown("---")
