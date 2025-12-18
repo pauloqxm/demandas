@@ -1583,7 +1583,7 @@ def pagina_solicitacao():
                 quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
                 unidade = st.selectbox(
                     "📏 Unidade*",
-                    ["Kg", "Litros", "Garrafaões", "Unid.", "Metros", "m²", "m³", "Outro"],
+                    ["Kg", "Litros", "Garrafão", "Galão", "Unid.", "Metros", "m²", "m³", "Outro"],
                     index=None,  # Deixa vazio inicialmente
                     placeholder="Escolha a unidade",
                     help="Selecione a unidade"
