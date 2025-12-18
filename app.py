@@ -1565,8 +1565,7 @@ def pagina_solicitacao():
                 )
                 local = st.selectbox(
                     "📍 Local*",
-                    ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
-                     "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
+                    ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu", "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
                     index=None,  # Deixa vazio inicialmente
                     placeholder="Escolha um local",
                     help="Selecione o local solicitante"
