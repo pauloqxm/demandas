@@ -194,7 +194,7 @@ def enviar_email_brevo_api(assunto: str, corpo_texto: str) -> tuple:
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=cfg["timeout"])
         if 200 <= r.status_code < 300:
-            return True, "Brevo API OK"
+            return True, "E-mail enviado ao responsável"
         return False, f"Brevo API erro {r.status_code}. {r.text}"
     except Exception as e:
         return False, f"Brevo API falhou. {str(e)}"
@@ -1557,8 +1557,9 @@ def pagina_solicitacao():
             with col1:
                 solicitante = st.text_input("👤 Nome do Solicitante*", placeholder="Seu nome completo")
                 departamento = st.selectbox(
-                    "🏢 Departamento*",
-                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"]
+                    "🏢 Setor*",
+                    ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
+                    placeholder="Escolha um setor
                 )
                 local = st.selectbox(
                     "📍 Local*",
