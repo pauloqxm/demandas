@@ -1559,7 +1559,7 @@ def pagina_solicitacao():
                 departamento = st.selectbox(
                     "🏢 Setor*",
                     ["Selecione", "Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
-                    placeholder="Escolha um setor
+                    placeholder="Escolha um setor"
                 )
                 local = st.selectbox(
                     "📍 Local*",
