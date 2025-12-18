@@ -6,6 +6,55 @@ import time
 from datetime import datetime, date, timedelta
 
 # Importações dos módulos refatorados
+from sistema_demandas.config import TEMA_CORES
+
+# =============================
+# CSS Customizado (Tema Cogerh/Água)
+# =============================
+CSS_CUSTOM = f"""
+<style>
+    /* Main Streamlit Theme Overrides */
+    .st-emotion-cache-1cypcdb {{ /* Main sidebar */
+        background-color: {TEMA_CORES['secondary']}; /* Light blue background */
+    }}
+    .st-emotion-cache-1dp5vir {{ /* Main content area */
+        padding-top: 2rem;
+    }}
+    /* Primary Color for Buttons/Links */
+    .st-emotion-cache-1jmvea6 {{ /* Primary button background */
+        background-color: {TEMA_CORES['primary']};
+        border-color: {TEMA_CORES['primary']};
+    }}
+    .st-emotion-cache-1jmvea6:hover {{
+        background-color: #005A8C;
+        border-color: #005A8C;
+    }}
+    /* Custom Card Style for Metrics */
+    [data-testid="stMetric"] {{
+        background-color: {TEMA_CORES['background']};
+        border-left: 5px solid {TEMA_CORES['info']}; /* Ciano Água line */
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease-in-out;
+    }}
+    [data-testid="stMetric"] > div:first-child {{
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: {TEMA_CORES['primary']};
+    }}
+    [data-testid="stMetric"] > div:nth-child(2) {{
+        font-size: 0.9rem;
+        color: {TEMA_CORES['text']};
+    }}
+    /* Titles */
+    h1, h2, h3 {{
+        color: {TEMA_CORES['primary']};
+    }}
+</style>
+"""
+
+# Importações dos módulos refatorados
 from sistema_demandas.config import CORES_STATUS, CORES_PRIORIDADE, get_db_config, DATABASE_URL
 from sistema_demandas.timezone_utils import agora_fortaleza, _to_tz_aware_start, _to_tz_aware_end_exclusive
 from sistema_demandas.db_connector import test_db_connection
@@ -18,6 +67,7 @@ from sistema_demandas.data_access import (
 
 # =============================
 # Configuração da página
+st.markdown(CSS_CUSTOM, unsafe_allow_html=True)
 # =============================
 st.set_page_config(
     page_title="Sistema de Demandas - GRBANABUIU",
@@ -691,16 +741,26 @@ def pagina_login_admin():
 
 
 def pagina_admin():
-    """Renderiza o dashboard administrativo."""
+    """Renderiza o dashboard administrativo com tema Cogerh."""
     usuario = st.session_state.usuario_logado
     usuario_nome = usuario.get("nome", "Admin")
     usuario_nivel = usuario.get("nivel_acesso", "usuario")
     usuario_admin = usuario.get("is_admin", False)
 
-    st.sidebar.title(f"Olá, {usuario_nome}!")
-    st.sidebar.caption(f"Nível de Acesso: {usuario_nivel.capitalize()}")
+    st.sidebar.markdown(f"""
+    <div style="
+        padding: 15px;
+        border-radius: 8px;
+        background-color: {TEMA_CORES['primary']};
+        color: white;
+        margin-bottom: 15px;
+    ">
+        <h4 style="margin: 0;">Olá, {usuario_nome}!</h4>
+        <p style="margin: 0; font-size: 0.85rem; opacity: 0.9;">Nível: {usuario_nivel.capitalize()}</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if st.sidebar.button("🚪 Sair", type="secondary", use_container_width=True):
+    if st.sidebar.button("🚪 Sair do Sistema", type="secondary", use_container_width=True):
         st.session_state.usuario_logado = False
         st.session_state.pagina_atual = "inicio"
         st.rerun()
@@ -710,11 +770,12 @@ def pagina_admin():
         menu_opcoes.append("👥 Gerenciar Usuários")
         menu_opcoes.append("⚙️ Configurações")
 
-    menu_sel = st.sidebar.selectbox("Menu Administrativo", menu_opcoes)
+    st.sidebar.markdown("---")
+    menu_sel = st.sidebar.radio("Menu Administrativo", menu_opcoes, index=0)
 
     # Filtros globais para o dashboard
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Filtros")
+    st.sidebar.subheader("Filtros de Pesquisa")
 
     with st.sidebar.expander("Filtros de Data", expanded=False):
         data_inicio = st.date_input("Data Início", value=agora_fortaleza().date() - timedelta(days=30))
