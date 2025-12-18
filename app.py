@@ -1579,7 +1579,7 @@ def pagina_solicitacao():
                 )
 
             with col2:
-                item = st.text_input("📝 Descrição da Demanda*", placeholder="Descreva a solicitação", height=30)
+                item = st.text_input("📝 Descrição da Demanda*", placeholder="Descreva a solicitação")
                 quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
                 unidade = st.selectbox(
                     "📏 Unidade*",
