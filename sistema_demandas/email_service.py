@@ -6,6 +6,7 @@ import socket
 import requests
 from email.message import EmailMessage
 from .config import get_email_config, get_brevo_config, _env_int
+from .email_html import gerar_comprovante_html
 
 def _tcp_probe(host: str, port: int, timeout: int = 5) -> tuple:
     """Verifica se a porta TCP está aberta no host."""
@@ -16,7 +17,7 @@ def _tcp_probe(host: str, port: int, timeout: int = 5) -> tuple:
         return False, str(e)
 
 
-def enviar_email_brevo_api(assunto: str, corpo_texto: str) -> tuple:
+def enviar_email_brevo_api(assunto: str, corpo_texto: str, corpo_html: str) -> tuple:
     """Envia e-mail usando a API Brevo (Sendinblue)."""
     cfg = get_brevo_config()
     if not cfg["api_key"]:
@@ -37,6 +38,7 @@ def enviar_email_brevo_api(assunto: str, corpo_texto: str) -> tuple:
         "to": [{"email": e} for e in cfg["to"]],
         "subject": assunto,
         "textContent": corpo_texto,
+        "htmlContent": corpo_html,
     }
 
     try:
@@ -48,7 +50,7 @@ def enviar_email_brevo_api(assunto: str, corpo_texto: str) -> tuple:
         return False, f"Brevo API falhou. {str(e)}"
 
 
-def enviar_email_smtp(assunto: str, corpo: str) -> tuple:
+def enviar_email_smtp(assunto: str, corpo_texto: str, corpo_html: str) -> tuple:
     """Envia e-mail usando o protocolo SMTP."""
     cfg = get_email_config()
 
@@ -71,7 +73,9 @@ def enviar_email_smtp(assunto: str, corpo: str) -> tuple:
     msg["To"] = ", ".join(cfg["to"])
     if cfg["cc"]:
         msg["Cc"] = ", ".join(cfg["cc"])
-    msg.set_content(corpo)
+    # Define o corpo do e-mail como multipart/alternative (texto simples e HTML)
+    msg.set_content(corpo_texto)
+    msg.add_alternative(corpo_html, subtype="html")
 
     destinos = cfg["to"] + cfg["cc"] + cfg["bcc"]
 
@@ -102,9 +106,10 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
     subject_prefix = (os.environ.get("MAIL_SUBJECT_PREFIX") or "Sistema de Demandas").strip()
     assunto = f"{subject_prefix} | Nova demanda {codigo}"
 
+    # Gera o corpo do e-mail em texto simples (fallback)
     urg = "Sim" if bool(dados_email.get("urgencia", False)) else "Não"
     obs = dados_email.get("observacoes") or "Sem observações."
-    corpo = (
+    corpo_texto = (
         "Nova demanda registrada.\n\n"
         f"Código. {codigo}\n"
         f"Solicitante. {dados_email.get('solicitante','')}\n"
@@ -119,29 +124,32 @@ def enviar_email_nova_demanda(dados_email: dict) -> tuple:
         "Observações.\n"
         f"{obs}\n"
     )
+    
+    # Gera o corpo do e-mail em HTML (preferencial)
+    corpo_html = gerar_comprovante_html(dados_email)
 
     brevo_cfg = get_brevo_config()
     brevo_ok = bool(brevo_cfg.get("api_key"))
 
     # 1. Preferir API no Railway quando configurada
     if brevo_ok:
-        ok_api, msg_api = enviar_email_brevo_api(assunto, corpo)
+        ok_api, msg_api = enviar_email_brevo_api(assunto, corpo_texto, corpo_html)
         if ok_api:
             return True, msg_api
         # Se API falhar, tenta SMTP como fallback
-        ok_smtp, msg_smtp = enviar_email_smtp(assunto, corpo)
+        ok_smtp, msg_smtp = enviar_email_smtp(assunto, corpo_texto, corpo_html)
         if ok_smtp:
             return True, f"API falhou, mas SMTP funcionou. {msg_smtp}"
         return False, f"API falhou. {msg_api}. SMTP também falhou. {msg_smtp}"
 
     # 2. Sem API configurada, tenta SMTP
-    ok_smtp, msg_smtp = enviar_email_smtp(assunto, corpo)
+    ok_smtp, msg_smtp = enviar_email_smtp(assunto, corpo_texto, corpo_html)
     if ok_smtp:
         return True, msg_smtp
 
     # 3. Se SMTP falhar e tiver API, tenta fallback
     if brevo_ok:
-        ok_api, msg_api = enviar_email_brevo_api(assunto, corpo)
+        ok_api, msg_api = enviar_email_brevo_api(assunto, corpo_texto, corpo_html)
         if ok_api:
             return True, f"SMTP falhou, mas API funcionou. {msg_api}"
         return False, f"SMTP falhou. {msg_smtp}. API também falhou. {msg_api}"
