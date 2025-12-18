@@ -1560,13 +1560,16 @@ def pagina_solicitacao():
                     "🏢 Setor*",
                     ["Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
                     index=None,  # Deixa vazio inicialmente
-                    placeholder="Escolha um departamento",
-                    help="Selecione o departamento solicitante"
+                    placeholder="Escolha um setor",
+                    help="Selecione o setor solicitante"
                 )
                 local = st.selectbox(
                     "📍 Local*",
-                    ["Selecione", "Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
+                    ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
                      "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"]
+                    index=None,  # Deixa vazio inicialmente
+                    placeholder="Escolha um local",
+                    help="Selecione o local solicitante"
                 )
                 categoria = st.selectbox(
                     "📂 Categoria",
