@@ -952,8 +952,16 @@ def pagina_admin():
     st.sidebar.subheader("Filtros de Pesquisa")
 
     with st.sidebar.expander("Filtros de Data", expanded=False):
-        data_inicio = st.date_input("Data Início", value=agora_fortaleza().date() - timedelta(days=30))
-        data_fim = st.date_input("Data Fim", value=agora_fortaleza().date())
+        data_inicio = st.date_input(
+            "Data Início",
+            value=agora_fortaleza().date() - timedelta(days=30),
+            format="DD/MM/YYYY"
+        )
+        data_fim = st.date_input(
+            "Data Fim",
+            value=agora_fortaleza().date(),
+            format="DD/MM/YYYY"
+        )
 
     with st.sidebar.expander("Filtros de Status", expanded=False):
         status_filtros = st.multiselect("Status", list(CORES_STATUS.keys()), default=list(CORES_STATUS.keys()))
