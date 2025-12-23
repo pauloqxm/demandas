@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 # IMPORTANTE: set_page_config precisa vir antes de qualquer st.*
 # =============================
 st.set_page_config(
-    #page_title="Sistema de Demandas - GRBANABUIU",
+    page_title="Sistema de Demandas - GRBANABUIU",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -714,7 +714,7 @@ def pagina_gerenciar_usuarios():
 # Páginas públicas
 # =============================
 def pagina_inicial():
-    st.title("Sistema de Demandas - GRBANABUIU")
+    #st.title("Sistema de Demandas - GRBANABUIU")
     st.markdown("---")
 
     st.markdown("""
