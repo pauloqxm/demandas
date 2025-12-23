@@ -7,6 +7,26 @@ from datetime import datetime, date, timedelta
 
 # Importações dos módulos refatorados
 from sistema_demandas.config import TEMA_CORES
+from sistema_demandas.config import CORES_STATUS, CORES_PRIORIDADE, get_db_config, DATABASE_URL
+from sistema_demandas.timezone_utils import agora_fortaleza, _to_tz_aware_start, _to_tz_aware_end_exclusive
+from sistema_demandas.db_connector import test_db_connection
+from sistema_demandas.migrations import init_database
+from sistema_demandas.data_access import (
+    autenticar_usuario, criar_usuario, listar_usuarios, atualizar_usuario, desativar_usuario,
+    carregar_demandas, obter_estatisticas, atualizar_demanda, excluir_demanda, adicionar_demanda,
+    carregar_historico_demanda
+)
+
+# =============================
+# Configuração da página
+# IMPORTANTE: set_page_config precisa vir antes de qualquer st.*
+# =============================
+st.set_page_config(
+    page_title="Sistema de Demandas - GRBANABUIU",
+    page_icon="🖥️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 # =============================
 # CSS Customizado (Tema Cogerh/Água)
@@ -14,14 +34,15 @@ from sistema_demandas.config import TEMA_CORES
 CSS_CUSTOM = f"""
 <style>
     /* Main Streamlit Theme Overrides */
-    .st-emotion-cache-1cypcdb {{ /* Main sidebar */
-        background-color: {TEMA_CORES['secondary']}; /* Light blue background */
+    .st-emotion-cache-1cypcdb {{
+        background-color: {TEMA_CORES['secondary']};
     }}
-    .st-emotion-cache-1dp5vir {{ /* Main content area */
+    .st-emotion-cache-1dp5vir {{
         padding-top: 2rem;
     }}
+
     /* Primary Color for Buttons/Links */
-    .st-emotion-cache-1jmvea6 {{ /* Primary button background */
+    .st-emotion-cache-1jmvea6 {{
         background-color: {TEMA_CORES['primary']};
         border-color: {TEMA_CORES['primary']};
     }}
@@ -29,10 +50,11 @@ CSS_CUSTOM = f"""
         background-color: #005A8C;
         border-color: #005A8C;
     }}
+
     /* Custom Card Style for Metrics */
     [data-testid="stMetric"] {{
         background-color: {TEMA_CORES['background']};
-        border-left: 5px solid {TEMA_CORES['info']}; /* Ciano Água line */
+        border-left: 5px solid {TEMA_CORES['info']};
         padding: 15px;
         border-radius: 8px;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
@@ -47,6 +69,7 @@ CSS_CUSTOM = f"""
         font-size: 0.9rem;
         color: {TEMA_CORES['text']};
     }}
+
     /* Titles */
     h1, h2, h3 {{
         color: {TEMA_CORES['primary']};
@@ -54,27 +77,7 @@ CSS_CUSTOM = f"""
 </style>
 """
 
-# Importações dos módulos refatorados
-from sistema_demandas.config import CORES_STATUS, CORES_PRIORIDADE, get_db_config, DATABASE_URL
-from sistema_demandas.timezone_utils import agora_fortaleza, _to_tz_aware_start, _to_tz_aware_end_exclusive
-from sistema_demandas.db_connector import test_db_connection
-from sistema_demandas.migrations import init_database
-from sistema_demandas.data_access import (
-    autenticar_usuario, criar_usuario, listar_usuarios, atualizar_usuario, desativar_usuario,
-    carregar_demandas, obter_estatisticas, atualizar_demanda, excluir_demanda, adicionar_demanda,
-    carregar_historico_demanda
-)
-
-# =============================
-# Configuração da página
 st.markdown(CSS_CUSTOM, unsafe_allow_html=True)
-# =============================
-st.set_page_config(
-    page_title="Sistema de Demandas - GRBANABUIU",
-    page_icon="🖥️",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
 
 # =============================
 # UI helper
@@ -93,6 +96,181 @@ def formatar_brl(valor) -> str:
 def dataframe_to_csv_br(df: pd.DataFrame) -> bytes:
     """Converte um DataFrame para CSV com separador ; e decimal , no padrão brasileiro."""
     return df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
+
+
+# =============================
+# KANBAN (Dashboard)
+# =============================
+def _kb_norm_status(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = s.replace("ã", "a").replace("á", "a").replace("à", "a")
+    s = s.replace("ç", "c")
+    s = s.replace("í", "i").replace("ó", "o").replace("ô", "o")
+    return s
+
+def _kb_bucket(status: str) -> str:
+    ns = _kb_norm_status(status)
+    if ns in ("pendente", "pendentes"):
+        return "fazer"
+    if ns in ("em andamento", "andamento", "fazendo"):
+        return "fazendo"
+    if ns in ("concluido", "concluida", "concluidas", "concluidos", "cancelado", "cancelada", "cancelados", "canceladas"):
+        return "feito"
+    return "fazer"
+
+def _kb_badge(txt: str) -> str:
+    t = (txt or "").strip()
+    if not t:
+        return ""
+    return f"<span class='kb-badge'>{t}</span>"
+
+def _kb_card(d: dict) -> str:
+    titulo = (d.get("item") or "Demanda").strip()
+    codigo = (d.get("codigo") or "SEM-COD").strip()
+    prioridade = (d.get("prioridade") or "").strip()
+    status = (d.get("status") or "").strip()
+    solicitante = (d.get("solicitante") or "").strip()
+    depto = (d.get("departamento") or "").strip()
+    local = (d.get("local") or "").strip()
+    data_txt = (d.get("data_criacao_formatada") or "").strip()
+
+    cor_status = CORES_STATUS.get(status, TEMA_CORES.get("info", "#00B4D8"))
+    cor_prio = CORES_PRIORIDADE.get(prioridade, TEMA_CORES.get("warning", "#FFD166"))
+
+    return f"""
+    <div class="kb-card" style="border-left: 6px solid {cor_status};">
+        <div class="kb-title">{titulo}</div>
+        <div class="kb-meta">
+            {_kb_badge(codigo)}
+            <span class="kb-pill" style="background:{cor_prio}; color:#0b1f2a;">{prioridade or "Média"}</span>
+            <span class="kb-pill" style="background:{cor_status}; color:white;">{status or "Pendente"}</span>
+        </div>
+        <div class="kb-small">{solicitante}</div>
+        <div class="kb-small">{depto} {("• " + local) if local else ""}</div>
+        <div class="kb-small">{data_txt}</div>
+    </div>
+    """
+
+def render_kanban_board(demandas: list):
+    fazer, fazendo, feito = [], [], []
+    for d in (demandas or []):
+        b = _kb_bucket(d.get("status"))
+        if b == "fazer":
+            fazer.append(d)
+        elif b == "fazendo":
+            fazendo.append(d)
+        else:
+            feito.append(d)
+
+    st.markdown(f"""
+    <style>
+      .kb-col {{
+        background: {TEMA_CORES['background']};
+        border: 1px solid rgba(0,0,0,0.08);
+        border-radius: 16px;
+        padding: 0.9rem;
+      }}
+      .kb-head {{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        margin-bottom:0.65rem;
+        font-weight:800;
+        color:{TEMA_CORES['primary']};
+      }}
+      .kb-count {{
+        font-size:0.85rem;
+        padding:0.15rem 0.6rem;
+        border-radius:999px;
+        border:1px solid rgba(0,0,0,0.12);
+        background:white;
+        color:{TEMA_CORES['primary']};
+      }}
+      .kb-card {{
+        background:white;
+        border:1px solid rgba(0,0,0,0.08);
+        border-radius:14px;
+        padding:0.75rem;
+        margin-bottom:0.65rem;
+        box-shadow:0 6px 18px rgba(0,0,0,0.06);
+      }}
+      .kb-title {{
+        font-weight:900;
+        font-size:0.95rem;
+        color:{TEMA_CORES['text']};
+        margin-bottom:0.4rem;
+        line-height:1.2;
+      }}
+      .kb-meta {{
+        display:flex;
+        flex-wrap:wrap;
+        gap:0.35rem;
+        margin-bottom:0.45rem;
+      }}
+      .kb-badge {{
+        display:inline-block;
+        font-size:0.75rem;
+        padding:0.12rem 0.55rem;
+        border-radius:999px;
+        border:1px solid rgba(0,0,0,0.12);
+        background:#f4f6f8;
+      }}
+      .kb-pill {{
+        display:inline-block;
+        font-size:0.75rem;
+        padding:0.12rem 0.55rem;
+        border-radius:999px;
+        font-weight:800;
+      }}
+      .kb-small {{
+        font-size:0.8rem;
+        opacity:0.85;
+        line-height:1.25;
+        margin-top:0.15rem;
+      }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown(
+            f"<div class='kb-col'><div class='kb-head'>Fazer <span class='kb-count'>{len(fazer)}</span></div>",
+            unsafe_allow_html=True
+        )
+        with st.container(height=540, border=False):
+            if not fazer:
+                st.info("Sem pendentes.")
+            else:
+                for d in fazer:
+                    st.markdown(_kb_card(d), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(
+            f"<div class='kb-col'><div class='kb-head'>Fazendo <span class='kb-count'>{len(fazendo)}</span></div>",
+            unsafe_allow_html=True
+        )
+        with st.container(height=540, border=False):
+            if not fazendo:
+                st.info("Sem em andamento.")
+            else:
+                for d in fazendo:
+                    st.markdown(_kb_card(d), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with c3:
+        st.markdown(
+            f"<div class='kb-col'><div class='kb-head'>Feito <span class='kb-count'>{len(feito)}</span></div>",
+            unsafe_allow_html=True
+        )
+        with st.container(height=540, border=False):
+            if not feito:
+                st.info("Sem concluídas ou canceladas.")
+            else:
+                for d in feito:
+                    st.markdown(_kb_card(d), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
@@ -441,7 +619,11 @@ def pagina_gerenciar_usuarios():
                 username_e = col_e1.text_input("Username", value=usuario_selecionado["username"], disabled=True)
                 senha_e = col_e2.text_input("Nova Senha (deixe em branco para manter)", type="password")
                 departamento_e = col_e1.text_input("Departamento", value=usuario_selecionado["departamento"])
-                nivel_acesso_e = col_e2.selectbox("Nível de Acesso", ["usuario", "supervisor", "administrador"], index=["usuario", "supervisor", "administrador"].index(usuario_selecionado["nivel_acesso"]))
+                nivel_acesso_e = col_e2.selectbox(
+                    "Nível de Acesso",
+                    ["usuario", "supervisor", "administrador"],
+                    index=["usuario", "supervisor", "administrador"].index(usuario_selecionado["nivel_acesso"])
+                )
                 is_admin_e = st.checkbox("É Administrador?", value=usuario_selecionado["is_admin"])
                 ativo_e = st.checkbox("Usuário Ativo", value=usuario_selecionado["ativo"])
 
@@ -598,14 +780,17 @@ def pagina_solicitacao():
                 )
                 local = st.selectbox(
                     "📍 Local*",
-                    ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu", "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II", "Umari", "Vieirão"],
+                    ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
+                     "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II",
+                     "Umari", "Vieirão"],
                     index=None,
                     placeholder="Escolha um local",
                     help="Selecione o local solicitante"
                 )
                 categoria = st.selectbox(
                     "📂 Categoria*",
-                    ["Alimentos", "Água potável", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes", "Materiais", "Outro"],
+                    ["Alimentos", "Água potável", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes",
+                     "Materiais", "Outro"],
                     index=None,
                     placeholder="Escolha uma categoria",
                     help="Selecione a categoria solicitante"
@@ -634,7 +819,6 @@ def pagina_solicitacao():
 
             if submitted:
                 if solicitante and item and departamento and local and unidade:
-                    # Simplificando a validação de "Selecione" para verificar se o valor é None (já que index=None)
                     if departamento is None or local is None or unidade is None or categoria is None:
                         st.error("⚠️ Selecione um valor válido para todos os campos obrigatórios.")
                     else:
@@ -773,7 +957,6 @@ def pagina_admin():
     st.sidebar.markdown("---")
     menu_sel = st.sidebar.radio("Menu Administrativo", menu_opcoes, index=0)
 
-    # Filtros globais para o dashboard
     st.sidebar.markdown("---")
     st.sidebar.subheader("Filtros de Pesquisa")
 
@@ -794,6 +977,9 @@ def pagina_admin():
         "prioridade": prioridade_filtros
     }
 
+    #==========================================
+    #------ADMINISTRATIVO DASHBOARD
+    #==========================================
     if menu_sel == "📋 Dashboard":
         st.header("📋 Dashboard de Demandas")
         st.caption(f"Período: {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
@@ -812,6 +998,15 @@ def pagina_admin():
 
         st.markdown("---")
 
+        # =============================
+        # KANBAN
+        # =============================
+        st.subheader("🧩 Kanban das Demandas")
+        demandas_kanban = carregar_demandas(filtros)
+        render_kanban_board(demandas_kanban)
+
+        st.markdown("---")
+
         if est.get("por_status"):
             st.subheader("📈 Distribuição por Status")
             df_status = pd.DataFrame(list(est["por_status"].items()), columns=["Status", "Quantidade"])
@@ -824,6 +1019,9 @@ def pagina_admin():
         demandas_urgentes = carregar_demandas(filtros_urgentes)
         render_resultados_com_detalhes(demandas_urgentes, "Demandas Urgentes/Alta", mostrar_campos_admin=True)
 
+    #==========================================
+    #------ADMINISTRATIVO CONSULTAR DEMANDAS
+    #==========================================
     elif menu_sel == "🔎 Consultar Demandas":
         st.header("🔎 Consultar Demandas (Admin)")
         st.caption("Filtros aplicados na barra lateral.")
@@ -925,7 +1123,6 @@ def pagina_admin():
 
             st.markdown("---")
             st.subheader("📋 Prévia do Comprovante (Admin)")
-            # Recarrega a demanda para mostrar o estado atualizado
             atualizado = carregar_demandas({"codigo": demanda.get("codigo")})
             if atualizado:
                 render_comprovante_demanda(atualizado[0], mostrar_campos_admin=True)
@@ -963,7 +1160,9 @@ def pagina_admin():
                 st.subheader("🚨 Distribuição por Prioridade")
                 df_prioridade = pd.DataFrame(list(est["por_prioridade"].items()), columns=["Prioridade", "Quantidade"])
                 ordem_prioridade = ["Urgente", "Alta", "Média", "Baixa"]
-                df_prioridade["Ordem"] = df_prioridade["Prioridade"].apply(lambda x: ordem_prioridade.index(x) if x in ordem_prioridade else 99)
+                df_prioridade["Ordem"] = df_prioridade["Prioridade"].apply(
+                    lambda x: ordem_prioridade.index(x) if x in ordem_prioridade else 99
+                )
                 df_prioridade = df_prioridade.sort_values("Ordem")
                 st.bar_chart(df_prioridade.set_index("Prioridade")["Quantidade"], use_container_width=True)
                 st.dataframe(df_prioridade[["Prioridade", "Quantidade"]], hide_index=True, use_container_width=True)
@@ -1007,6 +1206,7 @@ Timezone: America/Fortaleza
         st.subheader("📧 Configuração de email (variáveis)")
         st.caption("Preferência: Brevo API. SMTP fica como fallback se quiser.")
 
+        # Observação: estas funções precisam existir no seu projeto, como já estava no seu código.
         ecfg = get_email_config()
         bcfg = get_brevo_config()
 
@@ -1076,7 +1276,6 @@ elif st.session_state.pagina_atual == "solicitacao":
 elif st.session_state.pagina_atual == "login_admin":
     pagina_login_admin()
 elif st.session_state.pagina_atual == "admin":
-    # Redireciona para login se tentar acessar admin sem estar logado
     st.session_state.pagina_atual = "login_admin"
     st.rerun()
 else:
