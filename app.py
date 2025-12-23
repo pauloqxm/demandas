@@ -1082,7 +1082,7 @@ def pagina_admin():
         # =============================
         st.subheader("🧩 Kanban das Demandas")
         demandas_kanban = carregar_demandas(filtros)
-        render_kanban_board(demandas_kanban)
+        render_kanban_board(demandas_kanban, mostrar_campos_admin_no_comprovante=True)
 
         st.markdown("---")
 
