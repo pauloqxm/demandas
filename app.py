@@ -10,10 +10,19 @@ from datetime import datetime, timedelta
 # IMPORTANTE: set_page_config precisa vir antes de qualquer st.*
 # =============================
 st.set_page_config(
-    page_title="Sistema de Demandas - GRBANABUIU",
+    #page_title="Sistema de Demandas - GRBANABUIU",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="collapsed"
+)
+st.markdown(
+    """
+    <div style="display:flex; justify-content:center; margin-bottom:20px;">
+        <img src="https://i.ibb.co/rRwwWqdn/logo-sistema.png"
+             style="max-width:100%; height:auto; border-radius:12px;">
+    </div>
+    """,
+    unsafe_allow_html=True
 )
 
 # =============================
