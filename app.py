@@ -99,7 +99,7 @@ def dataframe_to_csv_br(df: pd.DataFrame) -> bytes:
 
 
 # =============================
-# KANBAN (Dashboard)
+# KANBAN (Dashboard) + Clique abre comprovante + Muda status no board
 # =============================
 def _kb_norm_status(s: str) -> str:
     s = (s or "").strip().lower()
@@ -124,7 +124,7 @@ def _kb_badge(txt: str) -> str:
         return ""
     return f"<span class='kb-badge'>{t}</span>"
 
-def _kb_card(d: dict) -> str:
+def _kb_card_html(d: dict) -> str:
     titulo = (d.get("item") or "Demanda").strip()
     codigo = (d.get("codigo") or "SEM-COD").strip()
     prioridade = (d.get("prioridade") or "").strip()
@@ -151,17 +151,7 @@ def _kb_card(d: dict) -> str:
     </div>
     """
 
-def render_kanban_board(demandas: list):
-    fazer, fazendo, feito = [], [], []
-    for d in (demandas or []):
-        b = _kb_bucket(d.get("status"))
-        if b == "fazer":
-            fazer.append(d)
-        elif b == "fazendo":
-            fazendo.append(d)
-        else:
-            feito.append(d)
-
+def _kb_css():
     st.markdown(f"""
     <style>
       .kb-col {{
@@ -186,12 +176,14 @@ def render_kanban_board(demandas: list):
         background:white;
         color:{TEMA_CORES['primary']};
       }}
+
+      /* Card visual */
       .kb-card {{
         background:white;
         border:1px solid rgba(0,0,0,0.08);
         border-radius:14px;
         padding:0.75rem;
-        margin-bottom:0.65rem;
+        margin-bottom:0.25rem;
         box-shadow:0 6px 18px rgba(0,0,0,0.06);
       }}
       .kb-title {{
@@ -228,55 +220,142 @@ def render_kanban_board(demandas: list):
         line-height:1.25;
         margin-top:0.15rem;
       }}
+
+      /* Botão invisível por cima do card */
+      div[data-testid="stButton"] > button.kb-open-btn {{
+        width: 100%;
+        text-align: left;
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }}
+      div[data-testid="stButton"] > button.kb-open-btn:hover {{
+        filter: brightness(0.98);
+      }}
+
+      /* Ajuste do select do status no card */
+      .kb-status-wrap {{
+        margin-top: 0.35rem;
+        padding-bottom: 0.55rem;
+      }}
     </style>
     """, unsafe_allow_html=True)
+
+def _kb_open_demanda(d: dict):
+    # guarda seleção e abre o painel do comprovante
+    st.session_state.kb_open_codigo = d.get("codigo")
+    st.session_state.kb_open_id = int(d.get("id")) if d.get("id") is not None else None
+
+def _kb_render_card_with_controls(d: dict, status_lista: list):
+    """
+    Card clicável (abre comprovante) + select de status (atualiza no banco).
+    Sem bagunçar: o select é compacto e colado embaixo do card.
+    """
+    demanda_id = int(d.get("id")) if d.get("id") is not None else None
+    codigo = d.get("codigo", "SEM-COD")
+    status_atual = d.get("status", "Pendente")
+
+    # botão "invisível" pra clique no card (conteúdo é o HTML do card)
+    # Streamlit não deixa clicar no HTML direto, então a gente usa o botão como gatilho.
+    if st.button(" ", key=f"kb_open_{codigo}_{demanda_id}", use_container_width=True):
+        _kb_open_demanda(d)
+
+    # injeta o HTML por cima do botão com margem negativa, fica parecendo "card clicável"
+    st.markdown(
+        f"<div style='margin-top:-2.35rem'>{_kb_card_html(d)}</div>",
+        unsafe_allow_html=True
+    )
+
+    # Select compacto de status no próprio kanban
+    kb_key = f"kb_status_{demanda_id}"
+    if kb_key not in st.session_state:
+        st.session_state[kb_key] = status_atual
+
+    st.markdown("<div class='kb-status-wrap'></div>", unsafe_allow_html=True)
+    novo_status = st.selectbox(
+        "Status",
+        status_lista,
+        index=status_lista.index(st.session_state[kb_key]) if st.session_state[kb_key] in status_lista else 0,
+        key=kb_key,
+        label_visibility="collapsed"
+    )
+
+    if demanda_id is not None and novo_status != status_atual:
+        ok = atualizar_demanda(demanda_id, {"status": novo_status})
+        if ok:
+            st.toast(f"Status atualizado: {codigo} -> {novo_status}", icon="✅")
+            st.rerun()
+        else:
+            st.toast(f"Falha ao atualizar status: {codigo}", icon="⚠️")
+
+def render_kanban_board(demandas: list, mostrar_campos_admin_no_comprovante: bool = True):
+    _kb_css()
+
+    # status padrão do teu sistema (ajusta se tu usa outros textos)
+    status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
+
+    # agrupamento
+    fazer, fazendo, feito = [], [], []
+    for d in (demandas or []):
+        b = _kb_bucket(d.get("status"))
+        if b == "fazer":
+            fazer.append(d)
+        elif b == "fazendo":
+            fazendo.append(d)
+        else:
+            feito.append(d)
+
+    # painel do comprovante (abre ao clicar no card)
+    codigo_open = st.session_state.get("kb_open_codigo")
+    if codigo_open:
+        with st.expander(f"📌 Comprovante aberto: {codigo_open}", expanded=True):
+            item = carregar_demandas({"codigo": codigo_open})
+            if item:
+                render_comprovante_demanda(item[0], mostrar_campos_admin=bool(mostrar_campos_admin_no_comprovante))
+            else:
+                st.warning("Não encontrei a demanda pelo código. Atualiza a página e tenta de novo.")
+            colx1, colx2 = st.columns([1, 1])
+            with colx1:
+                if st.button("Fechar", use_container_width=True):
+                    st.session_state.kb_open_codigo = None
+                    st.session_state.kb_open_id = None
+                    st.rerun()
+            with colx2:
+                if st.button("Atualizar Kanban", use_container_width=True):
+                    st.rerun()
 
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        st.markdown(
-            f"<div class='kb-col'><div class='kb-head'>Fazer <span class='kb-count'>{len(fazer)}</span></div>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<div class='kb-col'><div class='kb-head'>Fazer <span class='kb-count'>{len(fazer)}</span></div>", unsafe_allow_html=True)
         with st.container(height=540, border=False):
             if not fazer:
                 st.info("Sem pendentes.")
             else:
                 for d in fazer:
-                    st.markdown(_kb_card(d), unsafe_allow_html=True)
+                    _kb_render_card_with_controls(d, status_lista)
         st.markdown("</div>", unsafe_allow_html=True)
 
     with c2:
-        st.markdown(
-            f"<div class='kb-col'><div class='kb-head'>Fazendo <span class='kb-count'>{len(fazendo)}</span></div>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<div class='kb-col'><div class='kb-head'>Fazendo <span class='kb-count'>{len(fazendo)}</span></div>", unsafe_allow_html=True)
         with st.container(height=540, border=False):
             if not fazendo:
                 st.info("Sem em andamento.")
             else:
                 for d in fazendo:
-                    st.markdown(_kb_card(d), unsafe_allow_html=True)
+                    _kb_render_card_with_controls(d, status_lista)
         st.markdown("</div>", unsafe_allow_html=True)
 
     with c3:
-        st.markdown(
-            f"<div class='kb-col'><div class='kb-head'>Feito <span class='kb-count'>{len(feito)}</span></div>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<div class='kb-col'><div class='kb-head'>Feito <span class='kb-count'>{len(feito)}</span></div>", unsafe_allow_html=True)
         with st.container(height=540, border=False):
             if not feito:
                 st.info("Sem concluídas ou canceladas.")
             else:
                 for d in feito:
-                    st.markdown(_kb_card(d), unsafe_allow_html=True)
+                    _kb_render_card_with_controls(d, status_lista)
         st.markdown("</div>", unsafe_allow_html=True)
 
-
-def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
-    """Renderiza o comprovante visual de uma demanda."""
-    cor_status = CORES_STATUS.get(d.get("status", "Pendente"), "#FF6B6B")
-    cor_prioridade = CORES_PRIORIDADE.get(d.get("prioridade", "Média"), "#FFD166")
 
     with st.container():
         st.markdown(f"""
