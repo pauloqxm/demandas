@@ -3,19 +3,7 @@
 import streamlit as st
 import pandas as pd
 import time
-from datetime import datetime, date, timedelta
-
-# Importações dos módulos refatorados
-from sistema_demandas.config import TEMA_CORES
-from sistema_demandas.config import CORES_STATUS, CORES_PRIORIDADE, get_db_config, DATABASE_URL
-from sistema_demandas.timezone_utils import agora_fortaleza, _to_tz_aware_start, _to_tz_aware_end_exclusive
-from sistema_demandas.db_connector import test_db_connection
-from sistema_demandas.migrations import init_database
-from sistema_demandas.data_access import (
-    autenticar_usuario, criar_usuario, listar_usuarios, atualizar_usuario, desativar_usuario,
-    carregar_demandas, obter_estatisticas, atualizar_demanda, excluir_demanda, adicionar_demanda,
-    carregar_historico_demanda
-)
+from datetime import datetime, timedelta
 
 # =============================
 # Configuração da página
@@ -29,77 +17,107 @@ st.set_page_config(
 )
 
 # =============================
+# Importações do projeto
+# =============================
+from sistema_demandas.config import (
+    TEMA_CORES, CORES_STATUS, CORES_PRIORIDADE, get_db_config, DATABASE_URL
+)
+from sistema_demandas.timezone_utils import (
+    agora_fortaleza, _to_tz_aware_start, _to_tz_aware_end_exclusive
+)
+from sistema_demandas.db_connector import test_db_connection
+from sistema_demandas.migrations import init_database
+from sistema_demandas.data_access import (
+    autenticar_usuario, criar_usuario, listar_usuarios, atualizar_usuario, desativar_usuario,
+    carregar_demandas, obter_estatisticas, atualizar_demanda, excluir_demanda, adicionar_demanda,
+    carregar_historico_demanda
+)
+
+# =============================
+# Email configs (evita erro se não existir)
+# =============================
+try:
+    from sistema_demandas.email_utils import get_email_config, get_brevo_config  # ajuste conforme seu projeto
+except Exception:
+    def get_email_config():
+        return {
+            "enabled_new": False,
+            "subject_prefix": "",
+            "host": "",
+            "port": "",
+            "user": "",
+            "starttls": True,
+            "from": "",
+            "to": [],
+            "cc": [],
+            "bcc": [],
+            "timeout": 15
+        }
+
+    def get_brevo_config():
+        return {
+            "api_key": "",
+            "sender_email": "",
+            "sender_name": "",
+            "to": [],
+            "timeout": 15
+        }
+
+# =============================
 # CSS Customizado (Tema Cogerh/Água)
 # =============================
 CSS_CUSTOM = f"""
 <style>
-    /* Main Streamlit Theme Overrides */
     .st-emotion-cache-1cypcdb {{
-        background-color: {TEMA_CORES['secondary']};
+        background-color: {TEMA_CORES.get('secondary', '#e8f4ff')};
     }}
     .st-emotion-cache-1dp5vir {{
         padding-top: 2rem;
     }}
 
-    /* Primary Color for Buttons/Links */
     .st-emotion-cache-1jmvea6 {{
-        background-color: {TEMA_CORES['primary']};
-        border-color: {TEMA_CORES['primary']};
+        background-color: {TEMA_CORES.get('primary', '#0077b6')};
+        border-color: {TEMA_CORES.get('primary', '#0077b6')};
     }}
     .st-emotion-cache-1jmvea6:hover {{
         background-color: #005A8C;
         border-color: #005A8C;
     }}
 
-    /* Custom Card Style for Metrics */
     [data-testid="stMetric"] {{
-        background-color: {TEMA_CORES['background']};
-        border-left: 5px solid {TEMA_CORES['info']};
+        background-color: {TEMA_CORES.get('background', '#ffffff')};
+        border-left: 5px solid {TEMA_CORES.get('info', '#00b4d8')};
         padding: 15px;
         border-radius: 8px;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         transition: all 0.3s ease-in-out;
     }}
-    [data-testid="stMetric"] > div:first-child {{
-        font-size: 1.5rem;
-        font-weight: bold;
-        color: {TEMA_CORES['primary']};
-    }}
-    [data-testid="stMetric"] > div:nth-child(2) {{
-        font-size: 0.9rem;
-        color: {TEMA_CORES['text']};
-    }}
 
-    /* Titles */
     h1, h2, h3 {{
-        color: {TEMA_CORES['primary']};
+        color: {TEMA_CORES.get('primary', '#0077b6')};
     }}
 </style>
 """
-
 st.markdown(CSS_CUSTOM, unsafe_allow_html=True)
 
 # =============================
-# UI helper
+# Helpers
 # =============================
 def formatar_brl(valor) -> str:
-    """Formata um valor numérico para o padrão monetário brasileiro (R$)."""
     try:
         v = float(valor)
     except Exception:
         return "R$ 0,00"
-    s = f"{v:,.2f}"
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {s}"
 
-
 def dataframe_to_csv_br(df: pd.DataFrame) -> bytes:
-    """Converte um DataFrame para CSV com separador ; e decimal , no padrão brasileiro."""
     return df.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
 
 
 # =============================
-# KANBAN (Dashboard) + Clique abre comprovante + Muda status no board
+# KANBAN (Dashboard)
+# Clique abre comprovante + troca status no próprio Kanban
 # =============================
 def _kb_norm_status(s: str) -> str:
     s = (s or "").strip().lower()
@@ -118,44 +136,11 @@ def _kb_bucket(status: str) -> str:
         return "feito"
     return "fazer"
 
-def _kb_badge(txt: str) -> str:
-    t = (txt or "").strip()
-    if not t:
-        return ""
-    return f"<span class='kb-badge'>{t}</span>"
-
-def _kb_card_html(d: dict) -> str:
-    titulo = (d.get("item") or "Demanda").strip()
-    codigo = (d.get("codigo") or "SEM-COD").strip()
-    prioridade = (d.get("prioridade") or "").strip()
-    status = (d.get("status") or "").strip()
-    solicitante = (d.get("solicitante") or "").strip()
-    depto = (d.get("departamento") or "").strip()
-    local = (d.get("local") or "").strip()
-    data_txt = (d.get("data_criacao_formatada") or "").strip()
-
-    cor_status = CORES_STATUS.get(status, TEMA_CORES.get("info", "#00B4D8"))
-    cor_prio = CORES_PRIORIDADE.get(prioridade, TEMA_CORES.get("warning", "#FFD166"))
-
-    return f"""
-    <div class="kb-card" style="border-left: 6px solid {cor_status};">
-        <div class="kb-title">{titulo}</div>
-        <div class="kb-meta">
-            {_kb_badge(codigo)}
-            <span class="kb-pill" style="background:{cor_prio}; color:#0b1f2a;">{prioridade or "Média"}</span>
-            <span class="kb-pill" style="background:{cor_status}; color:white;">{status or "Pendente"}</span>
-        </div>
-        <div class="kb-small">{solicitante}</div>
-        <div class="kb-small">{depto} {("• " + local) if local else ""}</div>
-        <div class="kb-small">{data_txt}</div>
-    </div>
-    """
-
 def _kb_css():
     st.markdown(f"""
     <style>
       .kb-col {{
-        background: {TEMA_CORES['background']};
+        background: {TEMA_CORES.get('background', '#ffffff')};
         border: 1px solid rgba(0,0,0,0.08);
         border-radius: 16px;
         padding: 0.9rem;
@@ -166,7 +151,7 @@ def _kb_css():
         justify-content:space-between;
         margin-bottom:0.65rem;
         font-weight:800;
-        color:{TEMA_CORES['primary']};
+        color:{TEMA_CORES.get('primary', '#0077b6')};
       }}
       .kb-count {{
         font-size:0.85rem;
@@ -174,22 +159,20 @@ def _kb_css():
         border-radius:999px;
         border:1px solid rgba(0,0,0,0.12);
         background:white;
-        color:{TEMA_CORES['primary']};
+        color:{TEMA_CORES.get('primary', '#0077b6')};
       }}
-
-      /* Card visual */
       .kb-card {{
         background:white;
         border:1px solid rgba(0,0,0,0.08);
         border-radius:14px;
         padding:0.75rem;
-        margin-bottom:0.25rem;
+        margin-bottom:0.35rem;
         box-shadow:0 6px 18px rgba(0,0,0,0.06);
       }}
       .kb-title {{
         font-weight:900;
         font-size:0.95rem;
-        color:{TEMA_CORES['text']};
+        color:{TEMA_CORES.get('text', '#1f2d3d')};
         margin-bottom:0.4rem;
         line-height:1.2;
       }}
@@ -220,81 +203,56 @@ def _kb_css():
         line-height:1.25;
         margin-top:0.15rem;
       }}
-
-      /* Botão invisível por cima do card */
-      div[data-testid="stButton"] > button.kb-open-btn {{
-        width: 100%;
-        text-align: left;
-        padding: 0;
-        border: 0;
-        background: transparent;
-      }}
-      div[data-testid="stButton"] > button.kb-open-btn:hover {{
-        filter: brightness(0.98);
-      }}
-
-      /* Ajuste do select do status no card */
-      .kb-status-wrap {{
-        margin-top: 0.35rem;
-        padding-bottom: 0.55rem;
+      .kb-actions {{
+        margin-top: 0.3rem;
+        display:flex;
+        gap:0.5rem;
+        align-items:center;
       }}
     </style>
     """, unsafe_allow_html=True)
 
-def _kb_open_demanda(d: dict):
-    # guarda seleção e abre o painel do comprovante
-    st.session_state.kb_open_codigo = d.get("codigo")
-    st.session_state.kb_open_id = int(d.get("id")) if d.get("id") is not None else None
+def _kb_card_block(d: dict):
+    titulo = (d.get("item") or "Demanda").strip()
+    codigo = (d.get("codigo") or "SEM-COD").strip()
+    prioridade = (d.get("prioridade") or "").strip()
+    status = (d.get("status") or "").strip()
+    solicitante = (d.get("solicitante") or "").strip()
+    depto = (d.get("departamento") or "").strip()
+    local = (d.get("local") or "").strip()
+    data_txt = (d.get("data_criacao_formatada") or "").strip()
 
-def _kb_render_card_with_controls(d: dict, status_lista: list):
-    """
-    Card clicável (abre comprovante) + select de status (atualiza no banco).
-    Sem bagunçar: o select é compacto e colado embaixo do card.
-    """
-    demanda_id = int(d.get("id")) if d.get("id") is not None else None
-    codigo = d.get("codigo", "SEM-COD")
-    status_atual = d.get("status", "Pendente")
+    cor_status = CORES_STATUS.get(status, TEMA_CORES.get("info", "#00B4D8"))
+    cor_prio = CORES_PRIORIDADE.get(prioridade, TEMA_CORES.get("warning", "#FFD166"))
 
-    # botão "invisível" pra clique no card (conteúdo é o HTML do card)
-    # Streamlit não deixa clicar no HTML direto, então a gente usa o botão como gatilho.
-    if st.button(" ", key=f"kb_open_{codigo}_{demanda_id}", use_container_width=True):
-        _kb_open_demanda(d)
-
-    # injeta o HTML por cima do botão com margem negativa, fica parecendo "card clicável"
     st.markdown(
-        f"<div style='margin-top:-2.35rem'>{_kb_card_html(d)}</div>",
+        f"""
+        <div class="kb-card" style="border-left: 6px solid {cor_status};">
+          <div class="kb-title">{titulo}</div>
+          <div class="kb-meta">
+            <span class="kb-badge">{codigo}</span>
+            <span class="kb-pill" style="background:{cor_prio}; color:#0b1f2a;">{prioridade or "Média"}</span>
+            <span class="kb-pill" style="background:{cor_status}; color:white;">{status or "Pendente"}</span>
+          </div>
+          <div class="kb-small">{solicitante}</div>
+          <div class="kb-small">{depto}{(" • " + local) if local else ""}</div>
+          <div class="kb-small">{data_txt}</div>
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
-    # Select compacto de status no próprio kanban
-    kb_key = f"kb_status_{demanda_id}"
-    if kb_key not in st.session_state:
-        st.session_state[kb_key] = status_atual
-
-    st.markdown("<div class='kb-status-wrap'></div>", unsafe_allow_html=True)
-    novo_status = st.selectbox(
-        "Status",
-        status_lista,
-        index=status_lista.index(st.session_state[kb_key]) if st.session_state[kb_key] in status_lista else 0,
-        key=kb_key,
-        label_visibility="collapsed"
-    )
-
-    if demanda_id is not None and novo_status != status_atual:
-        ok = atualizar_demanda(demanda_id, {"status": novo_status})
-        if ok:
-            st.toast(f"Status atualizado: {codigo} -> {novo_status}", icon="✅")
-            st.rerun()
-        else:
-            st.toast(f"Falha ao atualizar status: {codigo}", icon="⚠️")
+def _kb_open_demanda(codigo: str):
+    st.session_state.kb_open_codigo = codigo
 
 def render_kanban_board(demandas: list, mostrar_campos_admin_no_comprovante: bool = True):
     _kb_css()
 
-    # status padrão do teu sistema (ajusta se tu usa outros textos)
+    if "kb_open_codigo" not in st.session_state:
+        st.session_state.kb_open_codigo = None
+
     status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
 
-    # agrupamento
     fazer, fazendo, feito = [], [], []
     for d in (demandas or []):
         b = _kb_bucket(d.get("status"))
@@ -305,57 +263,82 @@ def render_kanban_board(demandas: list, mostrar_campos_admin_no_comprovante: boo
         else:
             feito.append(d)
 
-    # painel do comprovante (abre ao clicar no card)
-    codigo_open = st.session_state.get("kb_open_codigo")
-    if codigo_open:
-        with st.expander(f"📌 Comprovante aberto: {codigo_open}", expanded=True):
-            item = carregar_demandas({"codigo": codigo_open})
+    # Painel do comprovante (abre no topo)
+    if st.session_state.kb_open_codigo:
+        cod = st.session_state.kb_open_codigo
+        with st.expander(f"📌 Comprovante aberto: {cod}", expanded=True):
+            item = carregar_demandas({"codigo": cod})
             if item:
                 render_comprovante_demanda(item[0], mostrar_campos_admin=bool(mostrar_campos_admin_no_comprovante))
             else:
                 st.warning("Não encontrei a demanda pelo código. Atualiza a página e tenta de novo.")
-            colx1, colx2 = st.columns([1, 1])
-            with colx1:
-                if st.button("Fechar", use_container_width=True):
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Fechar", use_container_width=True, key="kb_close"):
                     st.session_state.kb_open_codigo = None
-                    st.session_state.kb_open_id = None
                     st.rerun()
-            with colx2:
-                if st.button("Atualizar Kanban", use_container_width=True):
+            with c2:
+                if st.button("Atualizar", use_container_width=True, key="kb_refresh"):
                     st.rerun()
+
+    def render_col(col_title: str, items: list, height_px: int = 560):
+        st.markdown(
+            f"<div class='kb-col'><div class='kb-head'>{col_title} <span class='kb-count'>{len(items)}</span></div>",
+            unsafe_allow_html=True
+        )
+        with st.container(height=height_px, border=False):
+            if not items:
+                st.info("Sem itens.")
+            else:
+                for d in items:
+                    demanda_id = int(d.get("id")) if d.get("id") is not None else None
+                    codigo = d.get("codigo") or "SEM-COD"
+                    status_atual = d.get("status") or "Pendente"
+
+                    # Render do card
+                    _kb_card_block(d)
+
+                    # Ações: abrir comprovante + trocar status
+                    a1, a2 = st.columns([1, 1])
+                    with a1:
+                        if st.button("Abrir", key=f"kb_open_{demanda_id}_{codigo}", use_container_width=True):
+                            _kb_open_demanda(codigo)
+                            st.rerun()
+
+                    with a2:
+                        novo_status = st.selectbox(
+                            "Status",
+                            status_lista,
+                            index=status_lista.index(status_atual) if status_atual in status_lista else 0,
+                            key=f"kb_status_{demanda_id}",
+                            label_visibility="collapsed"
+                        )
+                        if demanda_id is not None and novo_status != status_atual:
+                            ok = atualizar_demanda(demanda_id, {"status": novo_status})
+                            if ok:
+                                st.toast(f"{codigo} -> {novo_status}", icon="✅")
+                                st.rerun()
+                            else:
+                                st.toast("Falha ao atualizar status.", icon="⚠️")
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
-
     with c1:
-        st.markdown(f"<div class='kb-col'><div class='kb-head'>Fazer <span class='kb-count'>{len(fazer)}</span></div>", unsafe_allow_html=True)
-        with st.container(height=540, border=False):
-            if not fazer:
-                st.info("Sem pendentes.")
-            else:
-                for d in fazer:
-                    _kb_render_card_with_controls(d, status_lista)
-        st.markdown("</div>", unsafe_allow_html=True)
-
+        render_col("Fazer", fazer)
     with c2:
-        st.markdown(f"<div class='kb-col'><div class='kb-head'>Fazendo <span class='kb-count'>{len(fazendo)}</span></div>", unsafe_allow_html=True)
-        with st.container(height=540, border=False):
-            if not fazendo:
-                st.info("Sem em andamento.")
-            else:
-                for d in fazendo:
-                    _kb_render_card_with_controls(d, status_lista)
-        st.markdown("</div>", unsafe_allow_html=True)
-
+        render_col("Fazendo", fazendo)
     with c3:
-        st.markdown(f"<div class='kb-col'><div class='kb-head'>Feito <span class='kb-count'>{len(feito)}</span></div>", unsafe_allow_html=True)
-        with st.container(height=540, border=False):
-            if not feito:
-                st.info("Sem concluídas ou canceladas.")
-            else:
-                for d in feito:
-                    _kb_render_card_with_controls(d, status_lista)
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_col("Feito", feito)
 
+
+# =============================
+# Comprovante e listagens
+# =============================
+def render_comprovante_demanda(d: dict, mostrar_campos_admin: bool = False):
+    cor_status = CORES_STATUS.get(d.get("status", "Pendente"), "#FF6B6B")
+    cor_prioridade = CORES_PRIORIDADE.get(d.get("prioridade", "Média"), "#FFD166")
 
     with st.container():
         st.markdown(f"""
@@ -408,7 +391,6 @@ def render_kanban_board(demandas: list, mostrar_campos_admin_no_comprovante: boo
 
         with col1:
             st.markdown("### 📄 Extrato da Demanda")
-
             info_grid = [
                 ("Solicitante:", d.get("solicitante", "")),
                 ("Departamento:", d.get("departamento", "")),
@@ -417,7 +399,6 @@ def render_kanban_board(demandas: list, mostrar_campos_admin_no_comprovante: boo
                 ("Quantidade:", f"{d.get('quantidade', 0)} {d.get('unidade', 'Unid.')}"),
                 ("Urgente:", "✅ Sim" if d.get("urgencia") else "❌ Não"),
             ]
-
             if mostrar_campos_admin:
                 info_grid.extend([
                     ("Almoxarifado:", "✅ Sim" if bool(d.get("almoxarifado")) else "❌ Não"),
@@ -537,7 +518,6 @@ def render_kanban_board(demandas: list, mostrar_campos_admin_no_comprovante: boo
 
 
 def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados", mostrar_campos_admin: bool = False):
-    """Renderiza a lista de demandas com a opção de expandir para ver detalhes."""
     st.subheader(titulo)
 
     if not demandas:
@@ -548,12 +528,9 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados", m
     total_urgentes = sum(1 for d in demandas if d.get("urgencia"))
 
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total de Demandas", len(demandas))
-    with col2:
-        st.metric("Total de Itens", total_itens)
-    with col3:
-        st.metric("Demandas Urgentes", total_urgentes)
+    col1.metric("Total de Demandas", len(demandas))
+    col2.metric("Total de Itens", total_itens)
+    col3.metric("Demandas Urgentes", total_urgentes)
 
     df = pd.DataFrame(demandas)
     df_display = df[[
@@ -571,13 +548,15 @@ def render_resultados_com_detalhes(demandas: list, titulo: str = "Resultados", m
 
     st.dataframe(df_display, hide_index=True, use_container_width=True)
 
-    for i, d in enumerate(demandas):
-        with st.expander(f"📋 Detalhes da Demanda {d.get('codigo', 'SEM-COD')} - {d['solicitante']}", expanded=False):
+    for d in demandas:
+        with st.expander(f"📋 Detalhes {d.get('codigo', 'SEM-COD')} - {d.get('solicitante','')}", expanded=False):
             render_comprovante_demanda(d, mostrar_campos_admin=mostrar_campos_admin)
 
 
+# =============================
+# Relatório mensal
+# =============================
 def render_relatorio_mensal_automatico():
-    """Renderiza a página de relatório mensal automático."""
     st.header("📅 Relatório Mensal Automático")
     st.caption("Filtro aplicado: Mês atual")
 
@@ -588,10 +567,7 @@ def render_relatorio_mensal_automatico():
     data_inicio = _to_tz_aware_start(primeiro_dia_mes)
     data_fim = _to_tz_aware_end_exclusive(primeiro_dia_proximo_mes - timedelta(days=1)).replace(day=1)
 
-    filtros = {
-        "data_inicio": data_inicio,
-        "data_fim": data_fim
-    }
+    filtros = {"data_inicio": data_inicio, "data_fim": data_fim}
 
     demandas = carregar_demandas(filtros)
     est = obter_estatisticas(filtros)
@@ -600,27 +576,12 @@ def render_relatorio_mensal_automatico():
         st.info("📭 Nenhuma demanda registrada neste mês.")
         return
 
-    st.subheader(f"Resumo de {primeiro_dia_mes.strftime('%B/%Y').capitalize()}")
-
     totais = est.get("totais", {})
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Demandas", totais.get("total", 0))
     col2.metric("Demandas Concluídas", totais.get("concluidas", 0))
     col3.metric("Total de Itens", totais.get("total_itens", 0))
     col4.metric("Total de Valores", formatar_brl(totais.get("total_valor", 0) or 0))
-
-    st.markdown("---")
-
-    if est.get("por_departamento"):
-        st.subheader("🏢 Demandas por Departamento")
-        df_depto = pd.DataFrame(list(est["por_departamento"].items()), columns=["Departamento", "Quantidade"])
-        df_depto = df_depto.sort_values("Quantidade", ascending=False)
-
-        col_g, col_t = st.columns([2, 1])
-        with col_g:
-            st.bar_chart(df_depto.set_index("Departamento")["Quantidade"], use_container_width=True)
-        with col_t:
-            st.dataframe(df_depto, hide_index=True, use_container_width=True)
 
     st.markdown("---")
     st.subheader("📋 Detalhes das Demandas")
@@ -636,8 +597,10 @@ def render_relatorio_mensal_automatico():
     )
 
 
+# =============================
+# Usuários
+# =============================
 def pagina_gerenciar_usuarios():
-    """Renderiza a página de gerenciamento de usuários."""
     st.header("👥 Gerenciar Usuários")
     st.caption("Criação, edição e desativação de usuários.")
 
@@ -695,9 +658,9 @@ def pagina_gerenciar_usuarios():
                 col_e1, col_e2 = st.columns(2)
                 nome_e = col_e1.text_input("Nome Completo", value=usuario_selecionado["nome"])
                 email_e = col_e2.text_input("Email", value=usuario_selecionado["email"])
-                username_e = col_e1.text_input("Username", value=usuario_selecionado["username"], disabled=True)
+                col_e1.text_input("Username", value=usuario_selecionado["username"], disabled=True)
                 senha_e = col_e2.text_input("Nova Senha (deixe em branco para manter)", type="password")
-                departamento_e = col_e1.text_input("Departamento", value=usuario_selecionado["departamento"])
+                departamento_e = col_e1.text_input("Departamento", value=usuario_selecionado.get("departamento", ""))
                 nivel_acesso_e = col_e2.selectbox(
                     "Nível de Acesso",
                     ["usuario", "supervisor", "administrador"],
@@ -738,8 +701,10 @@ def pagina_gerenciar_usuarios():
                         st.error(msg)
 
 
+# =============================
+# Páginas públicas
+# =============================
 def pagina_inicial():
-    """Renderiza a página inicial (menu de navegação)."""
     st.title("Sistema de Demandas - GRBANABUIU")
     st.markdown("---")
 
@@ -759,17 +724,14 @@ def pagina_inicial():
     """, unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns(3)
-
     with col1:
         if st.button("📝 Nova Solicitação", use_container_width=True, type="primary"):
             st.session_state.pagina_atual = "solicitacao"
             st.rerun()
-
     with col2:
         if st.button("🔎 Consultar Demandas", use_container_width=True):
             st.session_state.pagina_atual = "solicitacao"
             st.rerun()
-
     with col3:
         if st.button("🔧 Área Administrativa", use_container_width=True):
             st.session_state.pagina_atual = "login_admin"
@@ -778,16 +740,14 @@ def pagina_inicial():
     st.markdown("---")
     st.subheader("Status do Sistema")
 
-    if "init_complete" in st.session_state and st.session_state.init_complete:
+    if st.session_state.get("init_complete"):
         st.success("✅ Sistema pronto para uso. Banco de dados inicializado.")
-    elif "demo_mode" in st.session_state and st.session_state.demo_mode:
+    elif st.session_state.get("demo_mode"):
         st.warning("⚠️ Modo Demonstração. Conexão com o banco de dados falhou.")
     else:
         st.info("Aguardando inicialização do banco de dados...")
 
-
 def pagina_solicitacao():
-    """Renderiza a página de nova solicitação e consulta pública."""
     st.title("📝 Solicitação de Demandas")
     st.markdown("---")
 
@@ -795,10 +755,6 @@ def pagina_solicitacao():
         st.session_state.solicitacao_enviada = False
     if "ultima_demanda_codigo" not in st.session_state:
         st.session_state.ultima_demanda_codigo = None
-    if "ultima_demanda_email_ok" not in st.session_state:
-        st.session_state.ultima_demanda_email_ok = None
-    if "ultima_demanda_email_msg" not in st.session_state:
-        st.session_state.ultima_demanda_email_msg = None
 
     if st.session_state.solicitacao_enviada:
         st.success(f"""
@@ -809,11 +765,6 @@ def pagina_solicitacao():
         Guarde este código para consultar o status posteriormente.
         """)
 
-        if st.session_state.ultima_demanda_email_ok is True:
-            st.info(f"📧 Notificação enviada. {st.session_state.ultima_demanda_email_msg or ''}".strip())
-        elif st.session_state.ultima_demanda_email_ok is False:
-            st.warning(f"📧 A demanda foi registrada, mas o email falhou. {st.session_state.ultima_demanda_email_msg}")
-
         st.balloons()
 
         col1, col2 = st.columns(2)
@@ -821,125 +772,103 @@ def pagina_solicitacao():
             if st.button("📝 Enviar nova solicitação", use_container_width=True):
                 st.session_state.solicitacao_enviada = False
                 st.session_state.ultima_demanda_codigo = None
-                st.session_state.ultima_demanda_email_ok = None
-                st.session_state.ultima_demanda_email_msg = None
                 st.rerun()
         with col2:
             if st.button("🏠 Voltar ao início", use_container_width=True):
                 st.session_state.pagina_atual = "inicio"
                 st.session_state.solicitacao_enviada = False
                 st.session_state.ultima_demanda_codigo = None
-                st.session_state.ultima_demanda_email_ok = None
-                st.session_state.ultima_demanda_email_msg = None
                 st.rerun()
 
         st.markdown("---")
         st.subheader("📋 Comprovante da Demanda Enviada")
-
         filtros = {"codigo": st.session_state.ultima_demanda_codigo}
         resultado = carregar_demandas(filtros)
         if resultado:
             render_comprovante_demanda(resultado[0], mostrar_campos_admin=False)
-
         return
 
-    with st.container():
-        st.markdown("### 📝 Nova Solicitação")
-        with st.form("form_nova_demanda", clear_on_submit=True):
-            col1, col2 = st.columns(2)
+    st.markdown("### 📝 Nova Solicitação")
+    with st.form("form_nova_demanda", clear_on_submit=True):
+        col1, col2 = st.columns(2)
 
-            with col1:
-                solicitante = st.text_input("👤 Nome do Solicitante*", placeholder="Seu nome completo")
-                departamento = st.selectbox(
-                    "🏢 Setor*",
-                    ["Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
-                    index=None,
-                    placeholder="Escolha um setor",
-                    help="Selecione o setor solicitante"
-                )
-                local = st.selectbox(
-                    "📍 Local*",
-                    ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
-                     "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II",
-                     "Umari", "Vieirão"],
-                    index=None,
-                    placeholder="Escolha um local",
-                    help="Selecione o local solicitante"
-                )
-                categoria = st.selectbox(
-                    "📂 Categoria*",
-                    ["Alimentos", "Água potável", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes",
-                     "Materiais", "Outro"],
-                    index=None,
-                    placeholder="Escolha uma categoria",
-                    help="Selecione a categoria solicitante"
-                )
+        with col1:
+            solicitante = st.text_input("👤 Nome do Solicitante*", placeholder="Seu nome completo")
+            departamento = st.selectbox(
+                "🏢 Setor*",
+                ["Administrativo", "Açudes", "EB", "Gestão", "Operação", "Outro"],
+                index=None,
+                placeholder="Escolha um setor"
+            )
+            local = st.selectbox(
+                "📍 Local*",
+                ["Banabuiú", "Capitão Mor", "Cipoada", "Fogareiro", "Gerência", "Outro", "Patu", "Pirabibu",
+                 "Poço do Barro", "Quixeramobim", "São Jose I", "São Jose II", "Serafim Dias", "Trapiá II",
+                 "Umari", "Vieirão"],
+                index=None,
+                placeholder="Escolha um local"
+            )
+            categoria = st.selectbox(
+                "📂 Categoria*",
+                ["Alimentos", "Água potável", "Combustível", "Equipamentos", "Ferramentas", "Lubrificantes",
+                 "Materiais", "Outro"],
+                index=None,
+                placeholder="Escolha uma categoria"
+            )
 
-            with col2:
-                item = st.text_input("📝 Descrição da Demanda*", placeholder="Descreva a solicitação")
-                quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
-                unidade = st.selectbox(
-                    "📏 Unidade*",
-                    ["Kg", "Litros", "Garrafão", "Galão", "Unid.", "Metros", "m²", "m³", "Outro"],
-                    index=None,
-                    placeholder="Escolha a unidade",
-                    help="Selecione a unidade"
-                )
+        with col2:
+            item = st.text_input("📝 Descrição da Demanda*", placeholder="Descreva a solicitação")
+            quantidade = st.number_input("🔢 Quantidade*", min_value=1, value=1, step=1)
+            unidade = st.selectbox(
+                "📏 Unidade*",
+                ["Kg", "Litros", "Garrafão", "Galão", "Unid.", "Metros", "m²", "m³", "Outro"],
+                index=None,
+                placeholder="Escolha a unidade"
+            )
 
-            col3, col4 = st.columns(2)
-            with col3:
-                prioridade = st.selectbox("🚨 Prioridade", ["Baixa", "Média", "Alta", "Urgente"], index=1)
-                urgencia = st.checkbox("🚨 Marcar como URGENTE?")
+        col3, col4 = st.columns(2)
+        with col3:
+            prioridade = st.selectbox("🚨 Prioridade", ["Baixa", "Média", "Alta", "Urgente"], index=1)
+            urgencia = st.checkbox("🚨 Marcar como URGENTE?")
+        with col4:
+            observacoes = st.text_area("💬 Observações Adicionais", height=100)
 
-            with col4:
-                observacoes = st.text_area("💬 Observações Adicionais", placeholder="Informações adicionais...", height=100)
+        submitted = st.form_submit_button("✅ Enviar Solicitação", type="primary", use_container_width=True)
 
-            submitted = st.form_submit_button("✅ Enviar Solicitação", type="primary", use_container_width=True)
-
-            if submitted:
-                if solicitante and item and departamento and local and unidade:
-                    if departamento is None or local is None or unidade is None or categoria is None:
-                        st.error("⚠️ Selecione um valor válido para todos os campos obrigatórios.")
-                    else:
-                        nova_demanda = {
-                            "item": item,
-                            "quantidade": int(quantidade),
-                            "solicitante": solicitante.strip(),
-                            "departamento": departamento,
-                            "local": local,
-                            "prioridade": prioridade,
-                            "observacoes": observacoes,
-                            "categoria": categoria,
-                            "unidade": unidade,
-                            "urgencia": bool(urgencia),
-                        }
-
-                        res = adicionar_demanda(nova_demanda)
-                        if res and res.get("codigo"):
-                            st.session_state.solicitacao_enviada = True
-                            st.session_state.ultima_demanda_codigo = res["codigo"]
-                            st.session_state.ultima_demanda_email_ok = res.get("email_ok")
-                            st.session_state.ultima_demanda_email_msg = res.get("email_msg")
-                            st.rerun()
-                        else:
-                            st.error("❌ Erro ao salvar a solicitação. Tente novamente.")
+        if submitted:
+            if not (solicitante and item and departamento and local and unidade and categoria):
+                st.error("⚠️ Preencha todos os campos obrigatórios (*)")
+            else:
+                nova_demanda = {
+                    "item": item,
+                    "quantidade": int(quantidade),
+                    "solicitante": solicitante.strip(),
+                    "departamento": departamento,
+                    "local": local,
+                    "prioridade": prioridade,
+                    "observacoes": observacoes,
+                    "categoria": categoria,
+                    "unidade": unidade,
+                    "urgencia": bool(urgencia),
+                }
+                res = adicionar_demanda(nova_demanda)
+                if res and res.get("codigo"):
+                    st.session_state.solicitacao_enviada = True
+                    st.session_state.ultima_demanda_codigo = res["codigo"]
+                    st.rerun()
                 else:
-                    st.error("⚠️ Preencha todos os campos obrigatórios (*)")
+                    st.error("❌ Erro ao salvar a solicitação. Tente novamente.")
 
     st.markdown("---")
     st.markdown("### 🔎 Consultar Demandas")
-    st.caption("Busque por nome do solicitante ou código da demanda")
-
     with st.expander("🔍 Abrir painel de consulta", expanded=True):
         colc1, colc2 = st.columns(2)
         with colc1:
-            filtro_nome = st.text_input("Nome do solicitante", placeholder="Ex: João Silva", key="filtro_nome")
+            filtro_nome = st.text_input("Nome do solicitante", key="filtro_nome")
         with colc2:
-            filtro_codigo = st.text_input("Código da demanda", placeholder="Ex: 141225-01", key="filtro_codigo")
+            filtro_codigo = st.text_input("Código da demanda", key="filtro_codigo")
 
-        btn_consultar = st.button("🔍 Buscar Demandas", type="secondary", use_container_width=True)
-
-        if btn_consultar:
+        if st.button("🔍 Buscar Demandas", type="secondary", use_container_width=True):
             filtros = {}
             if filtro_nome.strip():
                 filtros["solicitante"] = filtro_nome.strip()
@@ -951,8 +880,6 @@ def pagina_solicitacao():
             else:
                 resultados = carregar_demandas(filtros)
                 render_resultados_com_detalhes(resultados, "📋 Demandas Encontradas", mostrar_campos_admin=False)
-        else:
-            st.info("ℹ️ As últimas demandas aparecerão aqui após a busca.")
 
     st.markdown("---")
     if st.button("← Voltar ao Início", use_container_width=True):
@@ -961,26 +888,10 @@ def pagina_solicitacao():
 
 
 def pagina_login_admin():
-    """Renderiza a página de login administrativo."""
     st.title("🔧 Área Administrativa")
     st.markdown("---")
     agora = agora_fortaleza()
     st.caption(f"🕒 Horário Fortaleza: {agora.strftime('%d/%m/%Y %H:%M')}")
-
-    st.markdown("""
-    <div style="
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        padding: 25px;
-        border-radius: 12px;
-        color: white;
-        margin-bottom: 25px;
-    ">
-        <h3 style="margin: 0; color: white;">🔒 Acesso Restrito</h3>
-        <p style="margin: 10px 0 0 0; opacity: 0.9;">
-            Esta área é exclusiva para administradores e supervisores autorizados.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -1003,8 +914,10 @@ def pagina_login_admin():
         st.rerun()
 
 
+# =============================
+# Admin
+# =============================
 def pagina_admin():
-    """Renderiza o dashboard administrativo com tema Cogerh."""
     usuario = st.session_state.usuario_logado
     usuario_nome = usuario.get("nome", "Admin")
     usuario_nivel = usuario.get("nivel_acesso", "usuario")
@@ -1014,7 +927,7 @@ def pagina_admin():
     <div style="
         padding: 15px;
         border-radius: 8px;
-        background-color: {TEMA_CORES['primary']};
+        background-color: {TEMA_CORES.get('primary', '#0077b6')};
         color: white;
         margin-bottom: 15px;
     ">
@@ -1030,8 +943,7 @@ def pagina_admin():
 
     menu_opcoes = ["📋 Dashboard", "🔎 Consultar Demandas", "✏️ Editar Demanda", "📅 Relatório Mensal", "📊 Estatísticas"]
     if usuario_admin:
-        menu_opcoes.append("👥 Gerenciar Usuários")
-        menu_opcoes.append("⚙️ Configurações")
+        menu_opcoes += ["👥 Gerenciar Usuários", "⚙️ Configurações"]
 
     st.sidebar.markdown("---")
     menu_sel = st.sidebar.radio("Menu Administrativo", menu_opcoes, index=0)
@@ -1056,9 +968,9 @@ def pagina_admin():
         "prioridade": prioridade_filtros
     }
 
-    #==========================================
-    #------ADMINISTRATIVO DASHBOARD
-    #==========================================
+    # =============================
+    # Dashboard
+    # =============================
     if menu_sel == "📋 Dashboard":
         st.header("📋 Dashboard de Demandas")
         st.caption(f"Período: {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
@@ -1076,16 +988,11 @@ def pagina_admin():
         col4.metric("Concluídas", totais.get("concluidas", 0), delta_color="normal")
 
         st.markdown("---")
-
-        # =============================
-        # KANBAN
-        # =============================
         st.subheader("🧩 Kanban das Demandas")
         demandas_kanban = carregar_demandas(filtros)
         render_kanban_board(demandas_kanban, mostrar_campos_admin_no_comprovante=True)
 
         st.markdown("---")
-
         if est.get("por_status"):
             st.subheader("📈 Distribuição por Status")
             df_status = pd.DataFrame(list(est["por_status"].items()), columns=["Status", "Quantidade"])
@@ -1098,9 +1005,9 @@ def pagina_admin():
         demandas_urgentes = carregar_demandas(filtros_urgentes)
         render_resultados_com_detalhes(demandas_urgentes, "Demandas Urgentes/Alta", mostrar_campos_admin=True)
 
-    #==========================================
-    #------ADMINISTRATIVO CONSULTAR DEMANDAS
-    #==========================================
+    # =============================
+    # Consultar
+    # =============================
     elif menu_sel == "🔎 Consultar Demandas":
         st.header("🔎 Consultar Demandas (Admin)")
         st.caption("Filtros aplicados na barra lateral.")
@@ -1116,6 +1023,9 @@ def pagina_admin():
                 use_container_width=True
             )
 
+    # =============================
+    # Editar demanda
+    # =============================
     elif menu_sel == "✏️ Editar Demanda":
         if usuario_nivel not in ["supervisor", "administrador"]:
             st.error("⛔ Apenas supervisores e administradores podem editar demandas.")
@@ -1129,7 +1039,7 @@ def pagina_admin():
             st.info("📭 Nenhuma demanda cadastrada nesse período/filtro.")
             return
 
-        opcoes = [f"{d.get('codigo','SEM-COD')} | {d['solicitante']} | {d['item'][:50]}..." for d in todas]
+        opcoes = [f"{d.get('codigo','SEM-COD')} | {d.get('solicitante','')} | {(d.get('item','')[:50])}..." for d in todas]
         escolha = st.selectbox("Selecione uma demanda para editar", opcoes, index=0)
 
         if escolha:
@@ -1143,26 +1053,13 @@ def pagina_admin():
             demanda_id = int(demanda["id"])
             st.markdown(f"**Editando demanda:** `{demanda.get('codigo', '')}`")
 
-            with st.expander("👀 Visualizar campos bloqueados", expanded=False):
-                st.text_input("Descrição", value=demanda.get("item", ""), disabled=True)
-                c1, c2, c3 = st.columns(3)
-                c1.text_input("Solicitante", value=demanda.get("solicitante", ""), disabled=True)
-                c2.text_input("Departamento", value=demanda.get("departamento", ""), disabled=True)
-                c3.text_input("Local", value=demanda.get("local", ""), disabled=True)
-                c4, c5, c6 = st.columns(3)
-                c4.text_input("Prioridade", value=demanda.get("prioridade", ""), disabled=True)
-                c5.text_input("Quantidade", value=str(demanda.get("quantidade", "")), disabled=True)
-                c6.text_input("Unidade", value=demanda.get("unidade", ""), disabled=True)
-
             with st.form(f"form_editar_{demanda_id}"):
                 status_lista = ["Pendente", "Em andamento", "Concluída", "Cancelada"]
-                st_index = status_lista.index(demanda["status"]) if demanda["status"] in status_lista else 0
-
+                st_index = status_lista.index(demanda["status"]) if demanda.get("status") in status_lista else 0
                 status_edit = st.selectbox("📊 Status", status_lista, index=st_index)
 
                 almoxarifado_edit = st.selectbox(
-                    "📦 Almoxarifado",
-                    ["Não", "Sim"],
+                    "📦 Almoxarifado", ["Não", "Sim"],
                     index=1 if bool(demanda.get("almoxarifado", False)) else 0
                 )
 
@@ -1191,6 +1088,8 @@ def pagina_admin():
                     if ok:
                         st.success("✅ Demanda atualizada com sucesso!")
                         st.rerun()
+                    else:
+                        st.error("Falha ao atualizar demanda.")
 
                 if excluir and usuario_admin:
                     if excluir_demanda(demanda_id):
@@ -1217,7 +1116,6 @@ def pagina_admin():
     elif menu_sel == "📊 Estatísticas":
         st.header("📊 Estatísticas Avançadas (com filtro aplicado)")
         est = obter_estatisticas(filtros)
-
         if not est:
             st.info("📭 Sem dados disponíveis para análise.")
             return
@@ -1226,7 +1124,6 @@ def pagina_admin():
         st.metric("💰 Total de valores", formatar_brl(totais.get("total_valor", 0) or 0))
 
         col1, col2 = st.columns(2)
-
         with col1:
             if est.get("por_status"):
                 st.subheader("📈 Distribuição por Status")
@@ -1285,7 +1182,6 @@ Timezone: America/Fortaleza
         st.subheader("📧 Configuração de email (variáveis)")
         st.caption("Preferência: Brevo API. SMTP fica como fallback se quiser.")
 
-        # Observação: estas funções precisam existir no seu projeto, como já estava no seu código.
         ecfg = get_email_config()
         bcfg = get_brevo_config()
 
@@ -1310,17 +1206,6 @@ BREVO_TO: {", ".join(bcfg.get("to", []))}
 BREVO_TIMEOUT: {bcfg.get("timeout")}
         """.strip(), language="bash")
 
-        st.markdown("---")
-        st.subheader("📊 Informações do Sistema")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Versão do Sistema", "3.4")
-            st.metric("Fuso Horário", "America/Fortaleza")
-        with col2:
-            st.metric("Design", "Comprovante Digital + Relatórios + Email API")
-            st.metric("Usuários Online", "1")
-
 
 # =============================
 # Boot do sistema
@@ -1344,7 +1229,7 @@ if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = False
 
 # =============================
-# Rotas do sistema
+# Rotas
 # =============================
 if st.session_state.usuario_logado:
     pagina_admin()
@@ -1354,9 +1239,6 @@ elif st.session_state.pagina_atual == "solicitacao":
     pagina_solicitacao()
 elif st.session_state.pagina_atual == "login_admin":
     pagina_login_admin()
-elif st.session_state.pagina_atual == "admin":
-    st.session_state.pagina_atual = "login_admin"
-    st.rerun()
 else:
     st.session_state.pagina_atual = "inicio"
     st.rerun()
